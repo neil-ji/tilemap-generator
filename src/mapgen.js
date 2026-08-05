@@ -242,7 +242,7 @@ export function genDungeon(o){
     else hh=0.56+fbm(x*0.07,y*0.07,seed+5)*0.08;
     heights[y*w+x]=hh;
   }
-  return {grid,w,h,seed:hs,heights,roadBase:new Array(w*h)};
+  return {grid,w,h,seed,heights,roadBase:new Array(w*h)};
 }
 export function carveL(g,a,b){ const x1=a[0],y1=a[1],x2=b[0],y2=b[1];
   for(let x=Math.min(x1,x2);x<=Math.max(x1,x2);x++) if(g[y1]) g[y1][x]='P';

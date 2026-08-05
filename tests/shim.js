@@ -27,6 +27,13 @@ export function makeCanvas(w0, h0){
       const a = Math.max(0, Math.min(255, Math.round((p.length > 3 ? p[3] : 1) * this.globalAlpha * 255)));
       return [p[0] | 0, p[1] | 0, p[2] | 0, a];
     },
+    getImageData(x, y, w2, h2){
+      const data = new Uint8ClampedArray(w2 * h2 * 4);
+      for (let yy = 0; yy < h2; yy++){ const sy = y + yy;
+        for (let xx = 0; xx < w2; xx++){ const sx = x + xx; const di = (yy * w2 + xx) * 4;
+          if (sx >= 0 && sx < w && sy >= 0 && sy < h){ const si = (sy * w + sx) * 4; data[di] = buf[si]; data[di + 1] = buf[si + 1]; data[di + 2] = buf[si + 2]; data[di + 3] = buf[si + 3]; } } }
+      return { data, width: w2, height: h2 };
+    },
     createImageData(w2, h2){ return { data: new Uint8ClampedArray(w2 * h2 * 4), width: w2, height: h2 }; },
     putImageData(img, ox, oy){
       const sw = img.width, sh = img.height;

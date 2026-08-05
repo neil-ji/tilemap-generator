@@ -6,6 +6,7 @@ import { baseOf } from './tiles.js';
 import { genWorld, genDungeon, MAPS } from './mapgen.js';
 import { buildMapCache, drawFrame as renderFrame } from './render.js';
 import { buildPalette } from './palette.js';
+import { downloadCanvas, exportMapPNG, buildTilesetCanvas, EXPORT_PAIRS } from './export.js';
 
 const cv=document.getElementById('cv');
 const wrap=document.getElementById('mapwrap');
@@ -54,6 +55,10 @@ const sp=document.createElement('div'); sp.className='panel'; const sp2=document
 document.getElementById('palette').appendChild(sp);
 document.getElementById('btnReroll').onclick=()=>{ currentDef.seed=(currentDef.seed+137)&0xffff; loadMap(currentDef); };
 document.getElementById('btnFit').onclick=fit;
+/* 导出：地图 PNG 复用 cacheCanvas（含过渡/高度差覆盖层），叠加海拔着色/等高线当前状态；瓦片集按当前地图定名 */
+document.getElementById('btnExportMap').onclick=()=>{ if(!cacheCanvas||!currentMap) return;
+  downloadCanvas(exportMapPNG(currentMap, cacheCanvas, {tint:tintEl.checked, contour:contourEl.checked}), 'tilemap-'+(currentDef.id||'map')+'-'+currentMap.seed+'.png'); };
+document.getElementById('btnExportTiles').onclick=()=>{ downloadCanvas(buildTilesetCanvas(), 'tileset-26x'+EXPORT_PAIRS.length+'.png'); };
 zoomEl.oninput=applyZoom;
 gridEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };
 tintEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };

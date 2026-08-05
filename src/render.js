@@ -2,7 +2,6 @@
 import { TILE, hash2 } from './util.js';
 import { TERRAIN } from './terrain.js';
 import { cellTile, bridgeTileCached } from './tiles.js';
-import { drawTree, drawRock, drawBush, drawFlower, drawHouse, decorFor } from './decor.js';
 
 export function bridgeAxis(x,y,grid,w,h){
   const n=y>0?grid[y-1][x]:null, s=y<h-1?grid[y+1][x]:null, wc=x>0?grid[y][x-1]:null, ec=x<w-1?grid[y][x+1]:null;
@@ -11,15 +10,14 @@ export function bridgeAxis(x,y,grid,w,h){
   if(isW(wc)&&isW(ec)) return 'v';
   return 'h';
 }
-export function buildMapCache(m,opts){
-  const {grid,w,h}=m; const houses=m.houses||[];
+export function buildMapCache(m){
+  const {grid,w,h}=m;
   const cache=document.createElement('canvas'); cache.width=w*TILE; cache.height=h*TILE;
   const ctx=cache.getContext('2d');
   const nmap=(c)=> c==='B'?'R':c;
   const nbrs=(x,y)=>({ n:y>0?nmap(grid[y-1][x]):null, s:y<h-1?nmap(grid[y+1][x]):null, w:x>0?nmap(grid[y][x-1]):null, e:x<w-1?nmap(grid[y][x+1]):null,
     nw:(y>0&&x>0)?nmap(grid[y-1][x-1]):null, ne:(y>0&&x<w-1)?nmap(grid[y-1][x+1]):null,
     sw:(y<h-1&&x>0)?nmap(grid[y+1][x-1]):null, se:(y<h-1&&x<w-1)?nmap(grid[y+1][x+1]):null });
-  const isHouse=(x,y)=> houses.some(hm=>hm.x===x&&hm.y===y);
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     const t=grid[y][x], px=x*TILE, py=y*TILE;
     if(t==='B'){ ctx.drawImage(bridgeTileCached(bridgeAxis(x,y,grid,w,h)),px,py); }
@@ -34,16 +32,6 @@ export function buildMapCache(m,opts){
       for(const d of ['n','s','w','e']){ const v=nb[d]; if(v && TERRAIN[v] && TERRAIN[t].elev-TERRAIN[v].elev>=2){ ctx.fillStyle='rgba(0,0,0,0.2)';
         if(d==='n')ctx.fillRect(px,py,TILE,1); else if(d==='s')ctx.fillRect(px,py+TILE-1,TILE,1);
         else if(d==='w')ctx.fillRect(px,py,1,TILE); else ctx.fillRect(px+TILE-1,py,1,TILE); } }
-    }
-    if(opts.decor){
-      if(isHouse(x,y)) drawHouse(ctx,px,py);
-      else {
-        const dc=decorFor(t,x,y,m.seed||1);
-        if(dc){ let nw=false;
-          for(let dy=-1;dy<=1&&!nw;dy++)for(let dx=-1;dx<=1&&!nw;dx++){ if(dx===0&&dy===0) continue; const nx=x+dx,ny=y+dy; if(nx<0||ny<0||nx>=w||ny>=h){ nw=true; break; } const c=grid[ny][nx]; if(c==='~'||c==='F'||c==='L') nw=true; }
-          if(!nw){ if(dc==='tree')drawTree(ctx,px,py,'tree'); else if(dc==='pine')drawTree(ctx,px,py,'pine'); else if(dc==='rock')drawRock(ctx,px,py); else if(dc==='bush')drawBush(ctx,px,py); else if(dc==='flower')drawFlower(ctx,px,py); }
-        }
-      }
     }
   }
   return cache;

@@ -69,6 +69,9 @@ export function renderTilePixels(A, dirNeighbors, mode, img, cx, cy){
     if(A==='~' && Math.abs(r.p)<band && hash2(x,y,11)>0.25) c=mix(c,[235,245,252],0.9);
     if(r.nb==='~' && Math.abs(r.p)<band && hash2(x,y,12)>0.72) c=mix(c,[235,245,252],0.7);
     if((A==='L'||r.nb==='L') && Math.abs(r.p)<band*0.7) c=mix(c,[255,190,80],0.55);
+    if((A==='A'||r.nb==='A') && Math.abs(r.p)<band && hash2(x,y,13)>0.55) c=mix(c,[236,246,252],0.85);
+    if((A==='M'||r.nb==='M') && Math.abs(r.p)<band && hash2(x,y,14)>0.94) c=[34,56,34];
+    if((A==='K'||r.nb==='K') && (A==='L'||r.nb==='L') && Math.abs(r.p)<band*0.7) c=mix(c,[255,150,50],0.5);
     const i=(y*TILE+x)*4; img.data[i]=c[0]; img.data[i+1]=c[1]; img.data[i+2]=c[2]; img.data[i+3]=255;
   } }
 }

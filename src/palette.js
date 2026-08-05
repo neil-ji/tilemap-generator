@@ -1,8 +1,7 @@
 /* ============ 图鉴面板 ============ */
 import { TILE } from './util.js';
 import { TERRAIN, PALETTE_ORDER } from './terrain.js';
-import { baseOf, tileCanvas, bridgeTileCached } from './tiles.js';
-import { drawTree, drawRock, drawBush, drawFlower, drawHouse } from './decor.js';
+import { baseOf, tileCanvas } from './tiles.js';
 
 export function buildPalette(){
   const pal=document.getElementById('palette');
@@ -19,8 +18,8 @@ export function buildPalette(){
   const p2=document.createElement('div'); p2.className='panel';
   const h2=document.createElement('h2'); h2.textContent='过渡瓦片 · 完整16片集（Wang 四邻位掩码）';
   p2.appendChild(h2);
-  const pairs16=[['~','S'],['G','S'],['G','T']];
-  const pairs4=[['~','F'],['T','W'],['T','L'],['R','G'],['P','C']];
+  const pairs16=[['~','S'],['~','A'],['G','S'],['G','H'],['G','M']];
+  const pairs4=[['~','F'],['T','W'],['T','L'],['R','G'],['P','C'],['T','K'],['F','N'],['A','S'],['E','G']];
   for(const [a,b] of pairs16){
     const lab=document.createElement('div'); lab.className='pair'; lab.textContent=TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 16片完整过渡';
     p2.appendChild(lab); const set=document.createElement('div'); set.className='wset';
@@ -36,15 +35,6 @@ export function buildPalette(){
   }
   pal.appendChild(p2);
 
-  const p3=document.createElement('div'); p3.className='panel';
-  const h3=document.createElement('h2'); h3.textContent='装饰物（自动散布 + 房屋）';
-  p3.appendChild(h3); const d3=document.createElement('div'); d3.className='decors';
-  const sprites=[['落叶树',(c)=>{c.clearRect(0,0,16,16);drawTree(c,0,0,'tree');}],['针叶树',(c)=>{c.clearRect(0,0,16,16);drawTree(c,0,0,'pine');}],['岩石',(c)=>{c.clearRect(0,0,16,16);drawRock(c,0,0);}],['灌木',(c)=>{c.clearRect(0,0,16,16);drawBush(c,0,0);}],['花朵',(c)=>{c.clearRect(0,0,16,16);drawFlower(c,0,0);}],['房屋',(c)=>{c.clearRect(0,0,16,16);drawHouse(c,0,0);}],['木桥·横',(c)=>{c.clearRect(0,0,16,16);c.drawImage(bridgeTileCached('h'),0,0);}],['木桥·纵',(c)=>{c.clearRect(0,0,16,16);c.drawImage(bridgeTileCached('v'),0,0);}]];
-  for(const [name,fn] of sprites){ const w=document.createElement('div'); w.className='tile';
-    const cn=document.createElement('canvas'); cn.width=cn.height=TILE; fn(cn.getContext('2d'),0,0); w.appendChild(cn);
-    const n=document.createElement('div'); n.className='n'; n.textContent=name; w.appendChild(n); d3.appendChild(w); }
-  p3.appendChild(d3); pal.appendChild(p3);
-
   const p4=document.createElement('div'); p4.className='panel';
   const h4=document.createElement('h2'); h4.textContent='图例 · 海拔（高低地形差）';
   p4.appendChild(h4); const leg=document.createElement('div'); leg.className='legend';
@@ -56,7 +46,7 @@ export function buildPalette(){
   const p5=document.createElement('div'); p5.className='panel';
   const h5=document.createElement('h2'); h5.textContent='说明';
   p5.appendChild(h5); const n5=document.createElement('div'); n5.className='note';
-  n5.innerHTML='所有瓦片均为逐像素程序化生成（值噪声 + 色带 + 四邻位掩码过渡 + 2×2 Bayer 抖动混合）。每格瓦片按 4 邻位掩码合成，多邻居交界处取主导地形，三岔/四岔角落过渡自然。河流自动切割陆地、道路跨河处自动生成木桥并带方向性流水动画。浪花泡沫、岩浆辉光、海拔阴影与悬崖棱线用于强化自然过渡与高低地形差。支持 ?map=0..3 直接打开对应地图，点「换种子」可重新生成世界。';
+  n5.innerHTML='所有瓦片均为逐像素程序化生成（值噪声 + 色带 + 四邻位掩码过渡 + 2×2 Bayer 抖动混合）。17 种地形瓦片（海洋/浅滩/沙滩/沙漠/草地/森林/泥地/沼泽/道路/岩石/岩壁/冰原/苔原/雪地/岩浆/焦土/石板地板），任意配对自动支持 Wang 完整过渡，多邻居交界处取主导地形。河流自动切割陆地、道路跨河处自动生成木桥并带方向性流水动画。浪花泡沫、浅滩沫花、沼泽苇秆、岩浆辉光、焦土裂纹与海拔阴影/悬崖棱线用于强化自然过渡与高低地形差。画面纯净无前景装饰。支持 ?map=0..4 直接打开对应地图，点「换种子」可重新生成世界。';
   p5.appendChild(n5); pal.appendChild(p5);
 }
 export function tileEl(A,B,dirs,bnd,label){

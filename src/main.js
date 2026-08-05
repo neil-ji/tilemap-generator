@@ -19,14 +19,14 @@ function startAnim(){ cancelAnimationFrame(raf); const loop=(t)=>{ drawFrame(t);
 
 /* ============ 控件 ============ */
 const mapbar=document.getElementById('mapbar'), seedinfo=document.getElementById('seedinfo');
-const zoomEl=document.getElementById('zoom'), gridEl=document.getElementById('grid'), decorEl=document.getElementById('decor'), animateEl=document.getElementById('animate'), speedEl=document.getElementById('speed');
+const zoomEl=document.getElementById('zoom'), gridEl=document.getElementById('grid'), animateEl=document.getElementById('animate'), speedEl=document.getElementById('speed');
 function applyZoom(){ const z=zoomEl.value*1; cv.style.width=(cv.width*z)+'px'; cv.style.height=(cv.height*z)+'px'; }
 function fit(){ if(!cacheCanvas) return; const z=clamp(Math.min((wrap.clientWidth-16)/(cacheCanvas.width),(wrap.clientHeight-16)/(cacheCanvas.height)),0.5,3); zoomEl.value=z.toFixed(1); applyZoom(); }
 function loadMap(def){
   currentDef=def;
   const data=def.dungeon? genDungeon(def) : genWorld(def);
   currentMap=data;
-  cacheCanvas=buildMapCache(data,{decor:decorEl.checked});
+  cacheCanvas=buildMapCache(data);
   cv.width=data.w*TILE; cv.height=data.h*TILE;
   fit(); updateStats();
   startAnim();
@@ -47,7 +47,6 @@ document.getElementById('btnReroll').onclick=()=>{ currentDef.seed=(currentDef.s
 document.getElementById('btnFit').onclick=fit;
 zoomEl.oninput=applyZoom;
 gridEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };
-decorEl.onchange=()=>{ cacheCanvas=buildMapCache(currentMap,{decor:decorEl.checked}); drawFrame(); };
 animateEl.onchange=()=>{ if(animateEl.checked) startAnim(); else { cancelAnimationFrame(raf); drawFrame(); } };
 window.addEventListener('resize',fit);
 

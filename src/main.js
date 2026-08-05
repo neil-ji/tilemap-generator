@@ -15,7 +15,7 @@ let cacheCanvas=null, currentMap=null, currentDef=null, raf=null;
 function drawFrame(now){
   renderFrame(cv.getContext('2d'), cacheCanvas, currentMap, {anim:animateEl.checked, grid:gridEl.checked, speed:speedEl.value*1}, now);
 }
-function startAnim(){ cancelAnimationFrame(raf); const loop=(t)=>{ drawFrame(t); raf=requestAnimationFrame(loop); }; raf=requestAnimationFrame(loop); }
+function startAnim(){ if(!animateEl.checked) return; cancelAnimationFrame(raf); const loop=(t)=>{ drawFrame(t); raf=requestAnimationFrame(loop); }; raf=requestAnimationFrame(loop); }
 
 /* ============ 控件 ============ */
 const mapbar=document.getElementById('mapbar'), seedinfo=document.getElementById('seedinfo');
@@ -24,12 +24,19 @@ function applyZoom(){ const z=zoomEl.value*1; cv.style.width=(cv.width*z)+'px'; 
 function fit(){ if(!cacheCanvas) return; const z=clamp(Math.min((wrap.clientWidth-16)/(cacheCanvas.width),(wrap.clientHeight-16)/(cacheCanvas.height)),0.5,3); zoomEl.value=z.toFixed(1); applyZoom(); }
 function loadMap(def){
   currentDef=def;
-  const data=def.dungeon? genDungeon(def) : genWorld(def);
-  currentMap=data;
-  cacheCanvas=buildMapCache(data);
-  cv.width=data.w*TILE; cv.height=data.h*TILE;
-  fit(); updateStats();
-  startAnim();
+  /* 生成期间禁用全部切图按钮 + 「生成中…」反馈；setTimeout(0) 让出主线程先渲染一帧再开始同步生成 */
+  const genBtns=[document.getElementById('btnReroll'),...document.querySelectorAll('#mapbar .btn')];
+  const labels=genBtns.map(b=>b.textContent);
+  genBtns.forEach(b=>{ b.disabled=true; b.textContent='生成中…'; });
+  setTimeout(()=>{
+    const data=def.dungeon? genDungeon(def) : genWorld(def);
+    currentMap=data;
+    cacheCanvas=buildMapCache(data);
+    cv.width=data.w*TILE; cv.height=data.h*TILE;
+    fit(); updateStats();
+    genBtns.forEach((b,i)=>{ b.disabled=false; b.textContent=labels[i]; });
+    if(animateEl.checked) startAnim(); else drawFrame();
+  },0);
 }
 function updateStats(){
   seedinfo.textContent=currentDef.name+' · 种子 '+currentMap.seed+' · '+currentMap.w+'×'+currentMap.h;
@@ -52,6 +59,11 @@ window.addEventListener('resize',fit);
 
 /* ============ 启动 ============ */
 buildPalette();
+/* 尊重 prefers-reduced-motion：命中则默认关闭动画，静态帧更省电且对运动敏感用户友好（P1-2/P2-3） */
+const mq=window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
+if(mq && mq.matches) animateEl.checked=false;
+if(mq){ const onMq=()=>{ if(mq.matches && animateEl.checked){ animateEl.checked=false; cancelAnimationFrame(raf); drawFrame(); } };
+  if(mq.addEventListener) mq.addEventListener('change',onMq); else if(mq.addListener) mq.addListener(onMq); }
 const qm=parseInt(new URLSearchParams(location.search).get('map')||'0',10);
 const first=MAPS[clamp(qm,0,MAPS.length-1)];
 loadMap(first);

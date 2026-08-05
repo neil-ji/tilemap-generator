@@ -1,9 +1,11 @@
 /* ============ 瓦片生成（含过渡） ============ */
-import { TILE, clamp, hash2, mix, wob } from './util.js';
+import { TILE, clamp, smooth, hash2, mix, wob } from './util.js';
 import { TERRAIN } from './terrain.js';
 
-/* 像素风过渡：过渡带内逐像素在 A/主导邻居间按世界坐标哈希阈值抖动选择（纯色块，无平滑渐变）。
-   世界坐标阈值保证相邻两格在共享缝线上逐像素一致、无缝隙；图鉴 blob 模式沿用 2×2 Bayer。 */
+/* 像素风过渡：seam 用世界坐标 Bayer 4×4 有序抖动（过渡带内逐像素在 A/主导邻居间按阈值选择，纯色块无平滑渐变）。
+   世界坐标阈值保证相邻两格在共享缝线上逐像素一致、无缝隙，且抖动结构化无盐椒散点；图鉴 blob 模式沿用 2×2 Bayer。 */
+const BAYER4=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+function bayerTh(wx,wy){ return (BAYER4[wy&3][wx&3]+0.5)/16; }
 export function pixelColor(Acolor, contribs, x, y, mode, wx, wy){
   if(!contribs.length) return {color:Acolor,p:-99,nb:null};
   let best=contribs[0];
@@ -12,7 +14,7 @@ export function pixelColor(Acolor, contribs, x, y, mode, wx, wy){
   if(best.bl>=0.999) return {color:best.color,p:best.p,nb:best.nb};
   let dithered;
   if(mode==='seam'){
-    const th=hash2(wx,wy,9911);
+    const th=bayerTh(wx,wy);
     dithered= best.bl>th ? best.color : Acolor;
   } else {
     const bayer=((best.u&1)?(best.v&1?1:3):(best.v&1?2:0));
@@ -21,17 +23,31 @@ export function pixelColor(Acolor, contribs, x, y, mode, wx, wy){
   }
   return {color:dithered, p:best.p, nb:best.nb};
 }
+/* bitmask corner rule：对角 dir 仅在相邻两个正交 dir 都存在过渡时参与（纯对角接触不渲染过渡鼓包） */
+function cornerRule(dirNeighbors){
+  const has={}; for(const e of dirNeighbors) has[e.dir]=true;
+  return dirNeighbors.filter(e=>{
+    const d=e.dir;
+    if(d==='nw') return has.n&&has.w;
+    if(d==='ne') return has.n&&has.e;
+    if(d==='sw') return has.s&&has.w;
+    if(d==='se') return has.s&&has.e;
+    return true;
+  });
+}
+const SEAM_BAND=2.0; /* seam 过渡带半宽（px），buildTemplate 与 renderTilePixels 必须同步 */
 /* 对称配对种子：相邻两格对同一条格缝使用同一波浪边界，保证过渡对齐无缝隙 */
 export function pairSeed(a,b){ const sa=TERRAIN[a].seed, sb=TERRAIN[b].seed; const lo=Math.min(sa,sb), hi=Math.max(sa,sb); return lo*4096+hi; }
-/* seam=地图模式：边界沿格缝随噪声蜿蜒，相邻两格各出半条抖动过渡（缝线处逐像素一致）；
-   blob=图鉴模式：边界在瓦片中部，B 从指定边缘侵占（经典 Wang 表现）。
-   对角 dir 用"到共享角像素距离"做圆角鼓包，两格在同一世界角上结果一致。 */
+/* seam=地图模式：边界沿格缝随噪声蜿蜒，相邻两格各出半条抖动过渡（缝线处逐像素一致）。
+   n/s/w/e 用共享世界坐标谓词（像素中心到边界距离，上格 p=y0-wy、下格 p=wy-y0 对称互补），
+   消除 wob 落在两格间空隙时上下行同时「夹在过渡带」造成的 1px 判定冲突，真正无缝隙。
+   对角 dir 用"到共享角像素距离"做圆角鼓包，两格在同一世界角上结果一致（配合 cornerRule 仅在有正交边时生效）。 */
 export function distFor(dir,x,y,ps,mode){
   if(mode==='seam'){
-    if(dir==='n') return wob(x,ps)-y;
-    if(dir==='s') return y-16-wob(x,ps);
-    if(dir==='w') return wob(y,ps)-x;
-    if(dir==='e') return x-16-wob(y,ps);
+    if(dir==='n') return wob(x,ps)-y-0.5;
+    if(dir==='s') return y-15.5-wob(x,ps);
+    if(dir==='w') return wob(y,ps)-x-0.5;
+    if(dir==='e') return x-15.5-wob(y,ps);
     const R=3; // 对角圆角半径（像素）
     if(dir==='nw') return R - Math.hypot(x,y);
     if(dir==='ne') return R - Math.hypot(16-x,y);
@@ -44,10 +60,11 @@ export function distFor(dir,x,y,ps,mode){
   return x-(8+wob(y,ps+19));
 }
 /* 复合瓦片：同一格内多邻居同时影响时取主导者，天然处理三岔/四岔角落；
-   对角邻居在共享角处圆角鼓包 */
+   对角邻居在共享角处圆角鼓包（seam 模式经 cornerRule 过滤，纯对角接触不渲染过渡） */
 export function renderTilePixels(A, dirNeighbors, mode, img, cx, cy){
   const sa=TERRAIN[A].seed;
-  const band = mode==='seam' ? 3.0 : 2.2;
+  const band = mode==='seam' ? SEAM_BAND : 2.2;
+  if(mode==='seam') dirNeighbors=cornerRule(dirNeighbors);
   for(let y=0;y<TILE;y++){ for(let x=0;x<TILE;x++){
     const Acolor=TERRAIN[A].color(x,y,sa);
     const wx=(cx||0)*TILE+x, wy=(cy||0)*TILE+y;
@@ -55,7 +72,7 @@ export function renderTilePixels(A, dirNeighbors, mode, img, cx, cy){
     for(let i=0;i<dirNeighbors.length;i++){ const {dir,nb}=dirNeighbors[i];
       const p=distFor(dir,x,y,pairSeed(A,nb),mode);
       if(p>-band){
-        const bl=clamp(0.5+p/band,0,1);
+        const bl=smooth(clamp(0.5+p/band,0,1));
         if(bl>0.001){
           let u,v;
           if(mode==='seam'){ if(dir==='n'){u=y;v=x;} else if(dir==='s'){u=15-y;v=x;} else if(dir==='w'){u=x;v=y;} else if(dir==='e'){u=15-x;v=y;} else {u=y;v=x;} }
@@ -95,7 +112,7 @@ baseOf.cache={};
 export { baseOf };
 
 /* ---- 邻居签名缓存（P1-1 后半）：同一「地形+8邻接」配置的格子共享一次昂贵的逐像素过渡计算 ----
-   seam 抖动阈值依赖格的世界坐标 hash2(wx,wy,9911)（保证相邻格共享缝线逐像素对齐），
+   seam 抖动阈值依赖格的世界坐标 Bayer 4×4（保证相邻格共享缝线逐像素对齐、无盐椒散点），
    因此缓存的是「抖动前」模板（A色/best色/bl + 特效门控位，均与格位置无关），
    渲染时按该格真实世界坐标补一次廉价抖动，并按与原实现相同的顺序/公式应用特效 mix，
    输出与逐格直算逐字节一致（mix 用 a+(b-a)*t 原位复合，保证浮点位级一致）；
@@ -107,8 +124,9 @@ function neighborKey(t,nbs){
 function buildTemplate(t,nbs){
   const dirNeighbors=[];
   for(const dir of ['n','s','w','e','nw','ne','sw','se']){ const nb=nbs[dir]; if(nb && nb!==t) dirNeighbors.push({dir,nb}); }
-  if(!dirNeighbors.length) return {flat:baseOf(t)};
-  const sa=TERRAIN[t].seed, band=3.0;
+  const dirs=cornerRule(dirNeighbors);
+  if(!dirs.length) return {flat:baseOf(t)};
+  const sa=TERRAIN[t].seed, band=SEAM_BAND;
   const aR=new Float32Array(256),aG=new Float32Array(256),aB=new Float32Array(256);
   const bR=new Float32Array(256),bG=new Float32Array(256),bB=new Float32Array(256);
   const bl=new Float32Array(256), fx=new Uint8Array(256);
@@ -117,9 +135,9 @@ function buildTemplate(t,nbs){
   for(let y=0;y<TILE;y++){ for(let x=0;x<TILE;x++){
     const Acolor=TERRAIN[t].color(x,y,sa);
     let best=null;
-    for(let j=0;j<dirNeighbors.length;j++){ const {dir,nb}=dirNeighbors[j];
+    for(let j=0;j<dirs.length;j++){ const {dir,nb}=dirs[j];
       const p=distFor(dir,x,y,pairSeed(t,nb),'seam');
-      if(p>-band){ const b=clamp(0.5+p/band,0,1);
+      if(p>-band){ const b=smooth(clamp(0.5+p/band,0,1));
         if(b>0.001){ const bc=TERRAIN[nb].color(x,y,TERRAIN[nb].seed);
           if(!best||b>best.bl) best={bl:b,color:bc,p,nb}; } } }
     const A=Acolor, B=best?best.color:Acolor, bb=best?best.bl:0;
@@ -148,7 +166,7 @@ function renderTemplate(tpl,img,cx,cy){
   let i=0;
   for(let y=0;y<TILE;y++){ const wy=oy+y;
     for(let x=0;x<TILE;x++){ const wx=ox+x;
-      const th=hash2(wx,wy,9911);
+      const th=bayerTh(wx,wy);
       const j=(y*TILE+x)*4, f=fx[i], bb=bl[i];
       let cr,cg,cb;
       if(bb<=0.001 || (bb<0.999 && bb<=th)){ cr=aR[i]; cg=aG[i]; cb=aB[i]; }

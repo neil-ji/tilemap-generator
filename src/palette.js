@@ -27,10 +27,19 @@ export function buildPalette(){
     p2.appendChild(set);
   }
   for(const [a,b] of pairs4){
-    const lab=document.createElement('div'); lab.className='pair'; lab.textContent=TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 4边缘过渡';
+    const isRoad=a==='R'||b==='R';
+    const lab=document.createElement('div'); lab.className='pair';
+    /* 道路 R 不再参与地形过渡（窄小径叠基底），pairs4 中 R↔G 改为固定草地基底的窄路示意 */
+    lab.textContent= isRoad? '道路 · 窄小径叠固定草地基底（非过渡）' : (TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 4边缘过渡');
     p2.appendChild(lab); const set=document.createElement('div'); set.className='wset t4';
-    const nm={n:'上',s:'下',w:'左',e:'右'};
-    for(const d of ['n','s','w','e']) set.appendChild(tileEl(a,b,[d],8,nm[d]));
+    if(isRoad){
+      for(const d of ['n','s','w','e']){ const w=document.createElement('div'); w.className='tw';
+        const cn=document.createElement('canvas'); cn.width=cn.height=TILE; cn.getContext('2d').drawImage(baseOf('R'),0,0);
+        w.appendChild(cn); set.appendChild(w); }
+    } else {
+      const nm={n:'上',s:'下',w:'左',e:'右'};
+      for(const d of ['n','s','w','e']) set.appendChild(tileEl(a,b,[d],8,nm[d]));
+    }
     p2.appendChild(set);
   }
   pal.appendChild(p2);
@@ -46,7 +55,7 @@ export function buildPalette(){
   const p5=document.createElement('div'); p5.className='panel';
   const h5=document.createElement('h2'); h5.textContent='说明';
   p5.appendChild(h5); const n5=document.createElement('div'); n5.className='note';
-  n5.innerHTML='通过 URL 参数 ?map=0..4 可直达对应地图（如 index.html?map=2），点「换种子」可重新生成世界。所有瓦片均为逐像素程序化生成（值噪声 + 色带 + 四邻位掩码过渡 + 2×2 Bayer 抖动混合）。26 种地形瓦片（深水/海洋/浅滩/泥滩/沙滩/沙漠/草原灌木/草地/森林/泥地/沼泽/道路/碎石坡/岩石/高原草甸/岩壁/冰原/苔原/雪地/雪岩/岩浆/焦土/石板地板/洞窟地面/木地板/深渊裂隙），任意配对自动支持 Wang 完整过渡，多邻居交界处取主导地形。河流自动切割陆地、道路在河岸自然终止，河流连贯完整。浪花泡沫、浅滩沫花、沼泽苇秆、岩浆辉光、焦土裂纹与海拔阴影/悬崖棱线用于强化自然过渡与高低地形差。画面纯净无前景装饰。';
+  n5.innerHTML='通过 URL 参数 ?map=0..4 可直达对应地图（如 index.html?map=2），点「换种子」可重新生成世界。所有瓦片均为逐像素程序化生成（值噪声 + 色带 + 四邻位掩码过渡 + 2×2 Bayer 抖动混合）。26 种地形瓦片（深水/海洋/浅滩/泥滩/沙滩/沙漠/草原灌木/草地/森林/泥地/沼泽/道路/碎石坡/岩石/高原草甸/岩壁/冰原/苔原/雪地/雪岩/岩浆/焦土/石板地板/洞窟地面/木地板/深渊裂隙），任意配对自动支持 Wang 完整过渡，多邻居交界处取主导地形。河流自动切割陆地、道路在河岸自然终止，河流连贯完整。道路是叠加在盖章前基底地形上的 6px 窄小径，颜色随基底自适应（草地土径/沙漠淡沙/雪地压实雪）并带 1px 深色描边，不参与地形过渡（图鉴中道路片以固定草地基底示意）。浪花泡沫、浅滩沫花、沼泽苇秆、岩浆辉光、焦土裂纹与海拔阴影/悬崖棱线用于强化自然过渡与高低地形差。画面纯净无前景装饰。';
   p5.appendChild(n5); pal.appendChild(p5);
 }
 export function tileEl(A,B,dirs,bnd,label){

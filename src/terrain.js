@@ -1,5 +1,5 @@
 /* ============ 地形纹理 ============ */
-import { hash2, clampc } from './util.js';
+import { hash2, clampc, mix, clamp } from './util.js';
 
 export function cOcean(x,y,s){ const v=hash2(x,y,s); const dep=(y+0.5)/16; let r=20,g=55,b=118;
   r+=v*12; g+=v*24; b+=v*30;
@@ -162,6 +162,19 @@ export function cScree(x,y,s){ const v=hash2(x,y,s); let r=132,g=122,b=100;
   if(v>0.97){ r+=10; g+=8; b+=6; }
   return clampc(r,g,b); }
 /* 雪岩：岩石基色 + 随机雪覆斑块（雪线过渡带） */
+/* 地形感知道路色（窄小径叠加）：基底去饱和 45% + 压暗 12%，再按基底亮度掺入 0~55% cRoad 暖棕。
+   草地→土橄榄、雪地→压实雪、沙漠→淡沙，自动覆盖全部基底；baseColor 为基底该像素的渲染色。 */
+export function roadColor(baseColor, x, y, s){
+  const gray=baseColor[0]*0.299+baseColor[1]*0.587+baseColor[2]*0.114;
+  const dark=[
+    (baseColor[0]+(gray-baseColor[0])*0.45)*0.88,
+    (baseColor[1]+(gray-baseColor[1])*0.45)*0.88,
+    (baseColor[2]+(gray-baseColor[2])*0.45)*0.88
+  ];
+  const t=clamp(1-(gray/255)*1.2,0,0.55);
+  const c=mix(dark,cRoad(x,y,s),t);
+  return clampc(c[0],c[1],c[2]);
+}
 export function cSnowRock(x,y,s){ const v=hash2(x,y,s); let r=150,g=152,b=162;
   if(v<0.2){ r-=26; g-=26; b-=24; } else if(v>0.78){ r+=18; g+=18; b+=14; }
   const snow=hash2(x>>1,y>>1,s+2);

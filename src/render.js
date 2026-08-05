@@ -1,7 +1,7 @@
 /* ============ 渲染：地图缓存合成 + 网格/动画/整帧 ============ */
 import { TILE, hash2 } from './util.js';
 import { TERRAIN } from './terrain.js';
-import { renderCell } from './tiles.js';
+import { renderCell, renderRoadCell } from './tiles.js';
 
 /* ============ 高度差覆盖层（post-blit，Phase 1 + Phase 2） ============
    Phase 1：复用邻格 elev（地形类型属性），零数据改动、不影响签名缓存。
@@ -118,6 +118,7 @@ function buildContourCanvas(m){
 export function buildMapCache(m){
   const {grid,w,h}=m;
   const heights=m.heights||null;
+  const roadBase=m.roadBase||null;
   const cache=document.createElement('canvas'); cache.width=w*TILE; cache.height=h*TILE;
   const ctx=cache.getContext('2d');
   const nmap=(c)=> c;
@@ -126,34 +127,59 @@ export function buildMapCache(m){
   /* 预生成可动格列表（水/岩浆）与每格的静态哈希，动画只遍历该列表 */
   const river=m.river||new Set();
   const animCells=[];
-  const nbrs=(x,y)=>({ n:y>0?nmap(grid[y-1][x]):null, s:y<h-1?nmap(grid[y+1][x]):null, w:x>0?nmap(grid[y][x-1]):null, e:x<w-1?nmap(grid[y][x+1]):null,
-    nw:(y>0&&x>0)?nmap(grid[y-1][x-1]):null, ne:(y>0&&x<w-1)?nmap(grid[y-1][x+1]):null,
-    sw:(y<h-1&&x>0)?nmap(grid[y+1][x-1]):null, se:(y<h-1&&x<w-1)?nmap(grid[y+1][x+1]):null });
+  /* R→基底 解析：道路格在其它格的邻接中被解析为其 roadBase（盖章时保存的基底），
+     使道路两侧的基底与被覆盖基底同材质 → 无缝连续（并让邻 R 的格归入普通基底格缓存）。
+     roadBase 缺失（外部调用/旧数据）时兜底「非水体正交邻居多数」，避免把海洋当基底。 */
+  const fallbackBase=(x,y)=>{ let best='G',cnt=0; const votes={};
+    for(const [dy,dx] of [[-1,0],[1,0],[0,-1],[0,1]]){ const ny=y+dy,nx=x+dx;
+      if(ny<0||ny>=h||nx<0||nx>=w) continue;
+      const c=grid[ny][nx]; if(c==='~'||c==='A'||c==='U'||c==='R') continue;
+      votes[c]=(votes[c]||0)+1; if(votes[c]>cnt){ cnt=votes[c]; best=c; } }
+    return best; };
+  const res=(ch,x,y)=>{ if(ch!=='R') return ch;
+    if(roadBase){ const b=roadBase[y*w+x]; if(b) return b; }
+    return fallbackBase(x,y); };
+  const nbrs=(x,y)=>({ n:y>0?res(nmap(grid[y-1][x]),x,y-1):null, s:y<h-1?res(nmap(grid[y+1][x]),x,y+1):null, w:x>0?res(nmap(grid[y][x-1]),x-1,y):null, e:x<w-1?res(nmap(grid[y][x+1]),x+1,y):null,
+    nw:(y>0&&x>0)?res(nmap(grid[y-1][x-1]),x-1,y-1):null, ne:(y>0&&x<w-1)?res(nmap(grid[y-1][x+1]),x+1,y-1):null,
+    sw:(y<h-1&&x>0)?res(nmap(grid[y+1][x-1]),x-1,y+1):null, se:(y<h-1&&x<w-1)?res(nmap(grid[y+1][x+1]),x+1,y+1):null });
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     const t=grid[y][x], px=x*TILE, py=y*TILE;
     if(t==='~'){ const rv=river.has(x+','+y)?1:0; animCells.push({x,y,ty:'~',rv,k:hash2(x,y,1),kr:rv?hash2(x,y,5):0}); }
     else if(t==='L') animCells.push({x,y,ty:'L',k:hash2(x,y,3)});
     const nb=nbrs(x,y); /* 与下方海拔阴影/悬崖棱线共用一次邻接计算 */
-    const flatTile=renderCell(t,nb,img,x,y);
-    if(flatTile) ctx.drawImage(flatTile,px,py); else ctx.putImageData(img,px,py);
+    /* 有效地形：R 格按其 roadBase 参与高度差（唇边/崖壁基色读基底，而非 cRoad）；缺 roadBase 时兜底邻居多数 */
+    const effT=(t==='R')?((roadBase&&roadBase[y*w+x])||fallbackBase(x,y)):t;
+    if(t==='R'){
+      /* 骨架方向由「正交 R 邻居」（原始 grid，非解析后）判定：端点/直段/L/T/十字 */
+      const arms=[];
+      if(y>0&&grid[y-1][x]==='R') arms.push('n');
+      if(y<h-1&&grid[y+1][x]==='R') arms.push('s');
+      if(x>0&&grid[y][x-1]==='R') arms.push('w');
+      if(x<w-1&&grid[y][x+1]==='R') arms.push('e');
+      renderRoadCell(effT,nb,arms,img,x,y);
+      ctx.putImageData(img,px,py);
+    } else {
+      const flatTile=renderCell(t,nb,img,x,y);
+      if(flatTile) ctx.drawImage(flatTile,px,py); else ctx.putImageData(img,px,py);
+    }
     const hh0=heights?heights[y*w+x]:0;
     /* 高度差覆盖层（post-blit）：Phase 1 邻格 elev + Phase 2 同地形高度层，各边独立 fillRect 自然构成 L/T 拐角 */
     for(const d of ['n','s','w','e']){
       const v=nb[d]; if(!v || !TERRAIN[v]) continue;
-      const dh=TERRAIN[v].elev-TERRAIN[t].elev;
+      const dh=TERRAIN[v].elev-TERRAIN[effT].elev;
       if(dh>0){ /* 邻格更高 → 低格投影 */
         let a=dh===1?0.28:0.42, a2=a*0.35;
-        if(t==='~'){ a*=0.3; a2*=0.3; } /* 水下崖基：海洋中投影减弱 */
+        if(effT==='~'){ a*=0.3; a2*=0.3; } /* 水下崖基：海洋中投影减弱 */
         let r=edgeOuter(d,px,py,1); ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(r[0],r[1],r[2],r[3]);
         r=edgeInner(d,px,py,1); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(r[0],r[1],r[2],r[3]);
       } else if(dh===-1){ /* 高格朝低格 1px 亮唇 */
-        drawLip(ctx,px,py,d,t);
+        drawLip(ctx,px,py,d,effT);
       } else if(dh<=-2){ /* 高格朝低格 3px 崖壁断面条 */
-        drawCliff(ctx,px,py,d,t);
-      } else if(v===t && heights && !NO_RELIEF[t]){ /* Phase 2：同地形内真实高度差浮雕 */
+        drawCliff(ctx,px,py,d,effT);
+      } else if(v===effT && heights && !NO_RELIEF[effT]){ /* Phase 2：同地形内真实高度差浮雕 */
         const dd=DIRXY[d], dhh=heights[(y+dd[0])*w+(x+dd[1])]-hh0;
         if(dhh>HH_TH){ drawHHShadow(ctx,px,py,d,Math.min(HH_SHADOW,0.09+dhh*0.5)); }
-        else if(dhh<-HH_TH){ drawHHLip(ctx,px,py,d,t,Math.min(HH_LIP,0.05-dhh*0.35)); }
+        else if(dhh<-HH_TH){ drawHHLip(ctx,px,py,d,effT,Math.min(HH_LIP,0.05-dhh*0.35)); }
       }
     }
   }

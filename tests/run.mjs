@@ -215,7 +215,7 @@ await test('T4 道路窄条验证（roadBase 特征检测，依赖道路改造�
   }
   if (!hasBase) return skip('roadBase 特性未合入当前分支（道路改造未落地）——跳过道路窄条断言；合入后本测试自动启用');
 
-  const WATER = { '~': 1, 'U': 1, 'A': 1, 'L': 1, 'Y': 1 };
+  const WATER = { '~': 1 }; /* 仅深水被 stampLine 跳过（与道路改造 stampLine 一致） */
   const problems = [];
   let roadCells = 0, coastalOk = 0;
   for (const def of MAPS){

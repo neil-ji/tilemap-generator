@@ -93,6 +93,88 @@ export function cellTile(t,nbs,cx,cy){
 const baseOf = (t)=> baseOf.cache[t] || (baseOf.cache[t]=tileCanvas(t,t,[]));
 baseOf.cache={};
 export { baseOf };
+
+/* ---- 邻居签名缓存（P1-1 后半）：同一「地形+8邻接」配置的格子共享一次昂贵的逐像素过渡计算 ----
+   seam 抖动阈值依赖格的世界坐标 hash2(wx,wy,9911)（保证相邻格共享缝线逐像素对齐），
+   因此缓存的是「抖动前」模板（A色/best色/bl + 特效门控位，均与格位置无关），
+   渲染时按该格真实世界坐标补一次廉价抖动，并按与原实现相同的顺序/公式应用特效 mix，
+   输出与逐格直算逐字节一致（mix 用 a+(b-a)*t 原位复合，保证浮点位级一致）；
+   无过渡的纯地形格退化为 baseOf(t) 直接 blit（本就是零邻居的基础瓦片，逐字节一致）。 */
+const templateCache=new Map();
+function neighborKey(t,nbs){
+  return t+'|'+(nbs.n||'.')+(nbs.s||'.')+(nbs.w||'.')+(nbs.e||'.')+(nbs.nw||'.')+(nbs.ne||'.')+(nbs.sw||'.')+(nbs.se||'.');
+}
+function buildTemplate(t,nbs){
+  const dirNeighbors=[];
+  for(const dir of ['n','s','w','e','nw','ne','sw','se']){ const nb=nbs[dir]; if(nb && nb!==t) dirNeighbors.push({dir,nb}); }
+  if(!dirNeighbors.length) return {flat:baseOf(t)};
+  const sa=TERRAIN[t].seed, band=3.0;
+  const aR=new Float32Array(256),aG=new Float32Array(256),aB=new Float32Array(256);
+  const bR=new Float32Array(256),bG=new Float32Array(256),bB=new Float32Array(256);
+  const bl=new Float32Array(256), fx=new Uint8Array(256);
+  const aIs=t==='~';
+  let i=0;
+  for(let y=0;y<TILE;y++){ for(let x=0;x<TILE;x++){
+    const Acolor=TERRAIN[t].color(x,y,sa);
+    let best=null;
+    for(let j=0;j<dirNeighbors.length;j++){ const {dir,nb}=dirNeighbors[j];
+      const p=distFor(dir,x,y,pairSeed(t,nb),'seam');
+      if(p>-band){ const b=clamp(0.5+p/band,0,1);
+        if(b>0.001){ const bc=TERRAIN[nb].color(x,y,TERRAIN[nb].seed);
+          if(!best||b>best.bl) best={bl:b,color:bc,p,nb}; } } }
+    const A=Acolor, B=best?best.color:Acolor, bb=best?best.bl:0;
+    const rp=best?best.p:-99, rnb=best?best.nb:null, absp=Math.abs(rp);
+    aR[i]=A[0]; aG[i]=A[1]; aB[i]=A[2];
+    bR[i]=B[0]; bG[i]=B[1]; bB[i]=B[2];
+    bl[i]=bb;
+    /* 特效门控只依赖格内局部坐标与签名（与格位置无关）→ 预计算门控位。
+       位：1/2/4/8=特效1..4，16=特效6（K↔L 边），32=特效5（沼泽深色，整体赋值且与特效6 互斥） */
+    let m=0;
+    if(aIs && absp<band && hash2(x,y,11)>0.25) m|=1;
+    if(rnb==='~' && absp<band && hash2(x,y,12)>0.72) m|=2;
+    if((t==='L'||rnb==='L') && absp<band*0.7) m|=4;
+    if((t==='A'||rnb==='A') && absp<band && hash2(x,y,13)>0.55) m|=8;
+    if((t==='M'||rnb==='M') && absp<band && hash2(x,y,14)>0.94) m|=32;
+    if((t==='K'||rnb==='K') && (t==='L'||rnb==='L') && absp<band*0.7) m|=16;
+    fx[i]=m;
+    i++;
+  } }
+  return {flat:false,aR,aG,aB,bR,bG,bB,bl,fx};
+}
+/* 缓存命中时的抖动渲染：按该格世界坐标补 seam 抖动 + 顺序特效 mix（与原实现逐字节一致） */
+function renderTemplate(tpl,img,cx,cy){
+  const {aR,aG,aB,bR,bG,bB,bl,fx}=tpl;
+  const data=img.data, ox=(cx||0)*TILE, oy=(cy||0)*TILE;
+  let i=0;
+  for(let y=0;y<TILE;y++){ const wy=oy+y;
+    for(let x=0;x<TILE;x++){ const wx=ox+x;
+      const th=hash2(wx,wy,9911);
+      const j=(y*TILE+x)*4, f=fx[i], bb=bl[i];
+      let cr,cg,cb;
+      if(bb<=0.001 || (bb<0.999 && bb<=th)){ cr=aR[i]; cg=aG[i]; cb=aB[i]; }
+      else { cr=bR[i]; cg=bG[i]; cb=bB[i]; }
+      if(f&32){ cr=34; cg=56; cb=34; }
+      else {
+        if(f&1){ const T=[235,245,252]; cr=cr+(T[0]-cr)*0.9; cg=cg+(T[1]-cg)*0.9; cb=cb+(T[2]-cb)*0.9; }
+        if(f&2){ const T=[235,245,252]; cr=cr+(T[0]-cr)*0.7; cg=cg+(T[1]-cg)*0.7; cb=cb+(T[2]-cb)*0.7; }
+        if(f&4){ const T=[255,190,80]; cr=cr+(T[0]-cr)*0.55; cg=cg+(T[1]-cg)*0.55; cb=cb+(T[2]-cb)*0.55; }
+        if(f&8){ const T=[236,246,252]; cr=cr+(T[0]-cr)*0.85; cg=cg+(T[1]-cg)*0.85; cb=cb+(T[2]-cb)*0.85; }
+        if(f&16){ const T=[255,150,50]; cr=cr+(T[0]-cr)*0.5; cg=cg+(T[1]-cg)*0.5; cb=cb+(T[2]-cb)*0.5; }
+      }
+      data[j]=cr; data[j+1]=cg; data[j+2]=cb; data[j+3]=255;
+      i++;
+    } }
+}
+/* 主入口：返回 flat 瓦片 canvas（调用方直接 blit）或 null（像素已写入 img，调用方 putImageData） */
+export function renderCell(t,nbs,img,cx,cy){
+  const key=neighborKey(t,nbs);
+  const tpl=templateCache.get(key);
+  if(tpl){ if(tpl.flat) return tpl.flat; renderTemplate(tpl,img,cx,cy); return null; }
+  const built=buildTemplate(t,nbs);
+  templateCache.set(key,built);
+  if(built.flat) return built.flat;
+  renderTemplate(built,img,cx,cy); return null;
+}
 /* 木桥瓦片：中间木板桥面 + 上下/左右水面，带桥下阴影与桥栏 */
 export function bridgeTile(axis){
   const cv=document.createElement('canvas'); cv.width=cv.height=TILE;

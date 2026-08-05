@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>像素地形瓦片集 · 程序化过渡 · 多地图查看器</title>
+<style>
+:root{--bg:#15171d;--panel:#1e222b;--line:#323845;--txt:#e6e9ef;--dim:#9aa3b2;--acc:#ffb454;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:#12141a;border-bottom:1px solid var(--line);padding:10px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+header h1{font-size:16px;margin:0;letter-spacing:1px}
+header h1 small{color:var(--dim);font-weight:400;margin-left:8px}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{background:#262b36;color:var(--txt);border:1px solid var(--line);padding:6px 10px;cursor:pointer;font-size:13px;border-radius:5px}
+.btn:hover{background:#2f3644}
+.btn.active{background:#3a4152;border-color:var(--acc);color:#ffd9a8}
+label.chk{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dim);cursor:pointer}
+#main{display:flex;gap:14px;padding:14px;align-items:flex-start}
+#mapwrap{flex:1;min-width:0;overflow:auto;background:#0c0e13;border:1px solid var(--line);border-radius:6px;max-height:calc(100vh - 150px);position:relative}
+canvas#cv{display:block;image-rendering:pixelated;margin:0}
+aside#palette{width:400px;flex:none;display:flex;flex-direction:column;gap:12px;max-height:calc(100vh - 150px);overflow:auto;padding-right:4px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px}
+.panel h2{margin:0 0 8px;font-size:13px;color:var(--acc);border-bottom:1px solid var(--line);padding-bottom:6px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(70px,1fr));gap:6px}
+.tile{text-align:center}
+.tile canvas,.tw canvas{width:32px;height:32px;image-rendering:pixelated;background:#0a0c10;border:1px solid #000}
+.tile .n{font-size:11px;color:var(--txt);margin-top:2px}
+.tile .l{font-size:10px;color:var(--dim)}
+.wset{display:grid;grid-template-columns:repeat(8,auto);gap:2px;justify-content:start}
+.tw{display:flex;flex-direction:column;align-items:center}
+.tw .tl{font-size:9px;color:var(--dim);margin-top:1px}
+.pair{font-size:12px;color:var(--txt);margin:10px 0 6px;font-weight:600}
+.legend{display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:11px}
+.legend span{display:flex;gap:6px;align-items:center}
+.legend canvas{width:14px;height:14px;image-rendering:pixelated;border:1px solid #000}
+.stats{display:flex;flex-wrap:wrap;gap:4px;font-size:11px}
+.stats b{background:#262b36;border:1px solid var(--line);padding:2px 6px;border-radius:4px;display:inline-flex;gap:4px;align-items:center;font-weight:400}
+.stats b canvas{width:12px;height:12px;image-rendering:pixelated}
+.decors{display:flex;gap:8px;flex-wrap:wrap}
+.decors canvas{width:32px;height:32px;image-rendering:pixelated;background:#0a0c10;border:1px solid #000}
+.note{font-size:11px;color:var(--dim);line-height:1.6}
+input[type=range]{vertical-align:middle}
+</style>
+</head>
+<body>
+<header>
+  <h1>像素地形瓦片集<small>程序化生成 · 完整过渡瓦片 · 高低地形 · 多地图</small></h1>
+  <div class="controls" id="mapbar"></div>
+  <div class="controls">
+    <span id="seedinfo" style="font-size:12px;color:var(--dim)"></span>
+    <button class="btn" id="btnReroll">换种子</button>
+    <button class="btn" id="btnFit">适应窗口</button>
+    <label class="chk">缩放 <input type="range" id="zoom" min="0.5" max="4" step="0.1" value="1"></label>
+    <label class="chk"><input type="checkbox" id="grid"> 网格</label>
+    <label class="chk"><input type="checkbox" id="decor" checked> 装饰物</label>
+    <label class="chk"><input type="checkbox" id="animate" checked> 水/岩浆动画</label>
+    <label class="chk">速度 <input type="range" id="speed" min="0" max="3" step="0.1" value="1"></label>
+  </div>
+</header>
+<div id="main">
+  <div id="mapwrap"><canvas id="cv" width="16" height="16"></canvas></div>
+  <aside id="palette"></aside>
+</div>
+<noscript>此页面需要启用 JavaScript。</noscript>
+<script>
+'use strict';
+/* ============ 常量与工具 ============ */
+const TILE = 16;
+const clamp = (v,a,b)=> v<a?a : v>b?b : v;
+const lerp = (a,b,t)=> a+(b-a)*t;
+const smooth = t => t*t*(3-2*t);
+function clampc(r,g,b){ r=r<0?0:r>255?255:r; g=g<0?0:g>255?255:g; b=b<0?0:b>255?255:b; return [r|0,g|0,b|0]; }
+function mix(a,b,t){ return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
+function hash2(x,y,s){ let h=(Math.imul(x,374761393)+Math.imul(y,668265263)+Math.imul(s|0,1274126177))|0; h=Math.imul(h^(h>>>13),1103515245); h^=h>>>16; return (h>>>0)/4294967296; }
+function vnoise(x,y,s){ const xi=Math.floor(x),yi=Math.floor(y); const xf=x-xi,yf=y-yi; const u=smooth(xf),v=smooth(yf); const a=hash2(xi,yi,s),b=hash2(xi+1,yi,s),c=hash2(xi,yi+1,s),d=hash2(xi+1,yi+1,s); return lerp(lerp(a,b,u),lerp(c,d,u),v); }
+function fbm(x,y,s){ let sum=0,amp=1,f=1,ns=0; for(let i=0;i<4;i++){ sum+=vnoise(x*f,y*f,s+i*101)*amp; ns+=amp; amp*=0.5; f*=2; } return sum/ns; }
+function wob(c,s){ return (hash2(c,(s&1023)+13,5)-0.5)*4.6 + Math.sin(c*0.7+s)*1.2 + Math.sin(c*1.7+s*2.3)*0.7; }
+
+/* ============ 地形纹理 ============ */
+function cOcean(x,y,s){ const v=hash2(x,y,s); const dep=(y+0.5)/16; let r=20,g=55,b=118;
+  r+=v*12; g+=v*24; b+=v*30;
+  r*=(1-0.16*dep); g*=(1-0.13*dep); b*=(1-0.09*dep);
+  if(((x-(y>>1)+16)&3)===0 && v>0.5){ r+=9; g+=22; b+=18; }
+  if(v>0.93){ r+=14; g+=28; b+=22; }
+  return clampc(r,g,b); }
+function cSand(x,y,s){ const v=hash2(x,y,s); let r=228,g=208,b=162;
+  if(v<0.18){ r-=24; g-=24; b-=28; } else if(v<0.34){ r-=8; g-=8; b-=10; }
+  else if(v>0.8){ r+=12; g+=10; b+=6; }
+  if(v>0.965){ r=255; g=251; b=238; }
+  return clampc(r,g,b); }
+function cGrass(x,y,s){ const v=hash2(x,y,s); const v2=hash2(x+9,y+3,s+1); let r=88,g=162,b=68;
+  if(v<0.16){ r-=20; g-=30; b-=14; } else if(v<0.3 && v2>0.5){ r-=12; g-=20; b-=8; }
+  else if(v>0.82){ r+=26; g+=22; b+=12; } else if(v>0.72 && v2<0.4){ r+=10; g+=14; b+=4; }
+  return clampc(r,g,b); }
+function cDirt(x,y,s){ const v=hash2(x,y,s); let r=152,g=99,b=57;
+  if(v<0.2){ r-=24; g-=18; b-=12; } else if(v>0.82){ r+=20; g+=16; b+=8; }
+  if(v>0.97){ r+=40; g+=52; b+=60; }
+  return clampc(r,g,b); }
+function cRoad(x,y,s){ const v=hash2(x,y,s); let r=170,g=156,b=124;
+  if((y&3)===0){ r-=30; g-=30; b-=28; }
+  else if(((x+((y>>2)&1)*2)&3)===0){ r-=14; g-=14; b-=16; }
+  if(v<0.18){ r-=16; g-=15; b-=14; } else if(v>0.82){ r+=14; g+=12; b+=10; }
+  if(v>0.97){ r+=24; g+=22; b+=18; }
+  return clampc(r,g,b); }
+function cStone(x,y,s){ const v=hash2(x,y,s); let r=143,g=143,b=155;
+  if(v<0.2){ r-=30; g-=30; b-=28; } else if(v>0.78){ r+=22; g+=22; b+=18; }
+  if(hash2(x,y,s+7)<0.05 && ((x*3+y*5)&7)<2){ r-=26; g-=26; b-=26; }
+  return clampc(r,g,b); }
+function cSnow(x,y,s){ const v=hash2(x,y,s); let r=240,g=246,b=252;
+  if(v<0.28){ r-=26; g-=22; b-=16; } else if(v>0.85){ r+=14; g+=9; b+=2; }
+  if(v>0.97){ r+=12; g+=12; b+=16; }
+  return clampc(r,g,b); }
+function cFrozen(x,y,s){ const v=hash2(x,y,s); let r=182,g=212,b=238;
+  r+=v*14; g+=v*12; b+=v*8;
+  if(v<0.2){ r-=22; g-=26; b-=24; } else if(v>0.86){ r+=24; g+=20; b+=10; }
+  if(hash2(x>>1,y,s+5)<0.06 && ((x+y)&1)===0){ r+=30; g+=30; b+=30; }
+  return clampc(r,g,b); }
+function cLava(x,y,s){ const v=hash2(x,y,s); let r,g,b;
+  if(v<0.16){ r=255; g=170; b=30; } else if(v<0.46){ r=245; g=124; b=42; }
+  else if(v<0.74){ r=216; g=68; b=22; } else { r=122; g=34; b=12; }
+  if(v>0.9 && hash2(x,y,s+3)<0.5){ r=72; g=22; b=10; }
+  return clampc(r,g,b); }
+function cFloor(x,y,s){ const bx=x&7,by=y&7;
+  if(bx===0 || by===0) return [104,110,121];
+  const v=hash2(x,y,s); let r=150,g=156,b=166;
+  if(v<0.2){ r-=20; g-=20; b-=18; } else if(v>0.8){ r+=12; g+=12; b+=10; }
+  if(v>0.97){ r-=12; g-=12; b-=10; }
+  return clampc(r,g,b); }
+function cWall(x,y,s){ const row=y>>2,off=(row&1)*4;
+  if((y&3)===0) return [73,70,81];
+  if(((x+off)&7)===0) return [73,70,81];
+  const v=hash2(x,y,s); let r=108,g=104,b=116;
+  if((y&3)===1){ r+=14; g+=14; b+=12; }
+  if(v<0.2){ r-=22; g-=22; b-=20; } else if(v>0.82){ r+=12; g+=12; b+=10; }
+  if(v>0.98){ r-=16; g-=16; b-=14; }
+  return clampc(r,g,b); }
+
+const TERRAIN = {
+  '~':{name:'海洋', seed:3, elev:0, color:cOcean},
+  'S':{name:'沙滩', seed:5, elev:1, color:cSand},
+  'P':{name:'石板地板', seed:31, elev:1, color:cFloor},
+  'D':{name:'泥地', seed:11, elev:2, color:cDirt},
+  'G':{name:'草地', seed:7, elev:2, color:cGrass},
+  'R':{name:'道路', seed:13, elev:2, color:cRoad},
+  'L':{name:'岩浆', seed:29, elev:2, color:cLava},
+  'F':{name:'冰原', seed:23, elev:3, color:cFrozen},
+  'T':{name:'岩石', seed:17, elev:3, color:cStone},
+  'C':{name:'岩壁', seed:37, elev:3, color:cWall},
+  'W':{name:'雪地', seed:19, elev:4, color:cSnow},
+  'B':{name:'桥', seed:13, elev:2, color:cRoad}
+};
+const PALETTE_ORDER=[['~','海洋'],['S','沙滩'],['G','草地'],['D','泥地'],['R','道路'],['T','岩石'],['W','雪地'],['F','冰原'],['L','岩浆'],['P','石板地板'],['C','岩壁']];
+
+/* ============ 瓦片生成（含过渡） ============ */
+/* 像素风过渡：过渡带内逐像素在 A/主导邻居间按世界坐标哈希阈值抖动选择（纯色块，无平滑渐变）。
+   世界坐标阈值保证相邻两格在共享缝线上逐像素一致、无缝隙；图鉴 blob 模式沿用 2×2 Bayer。 */
+function pixelColor(Acolor, contribs, x, y, mode, wx, wy){
+  if(!contribs.length) return {color:Acolor,p:-99,nb:null};
+  let best=contribs[0];
+  for(let i=1;i<contribs.length;i++) if(contribs[i].bl>best.bl) best=contribs[i];
+  if(best.bl<=0.001) return {color:Acolor,p:-99,nb:null};
+  if(best.bl>=0.999) return {color:best.color,p:best.p,nb:best.nb};
+  let dithered;
+  if(mode==='seam'){
+    const th=hash2(wx,wy,9911);
+    dithered= best.bl>th ? best.color : Acolor;
+  } else {
+    const bayer=((best.u&1)?(best.v&1?1:3):(best.v&1?2:0));
+    const th=(bayer+0.5)/4;
+    dithered= best.bl>th ? best.color : Acolor;
+  }
+  return {color:dithered, p:best.p, nb:best.nb};
+}
+/* 对称配对种子：相邻两格对同一条格缝使用同一波浪边界，保证过渡对齐无缝隙 */
+function pairSeed(a,b){ const sa=TERRAIN[a].seed, sb=TERRAIN[b].seed; const lo=Math.min(sa,sb), hi=Math.max(sa,sb); return lo*4096+hi; }
+/* seam=地图模式：边界沿格缝随噪声蜿蜒，相邻两格各出半条抖动过渡（缝线处逐像素一致）；
+   blob=图鉴模式：边界在瓦片中部，B 从指定边缘侵占（经典 Wang 表现）。
+   对角 dir 用"到共享角像素距离"做圆角鼓包，两格在同一世界角上结果一致。 */
+function distFor(dir,x,y,ps,mode){
+  if(mode==='seam'){
+    if(dir==='n') return wob(x,ps)-y;
+    if(dir==='s') return y-16-wob(x,ps);
+    if(dir==='w') return wob(y,ps)-x;
+    if(dir==='e') return x-16-wob(y,ps);
+    const R=3; // 对角圆角半径（像素）
+    if(dir==='nw') return R - Math.hypot(x,y);
+    if(dir==='ne') return R - Math.hypot(16-x,y);
+    if(dir==='sw') return R - Math.hypot(x,16-y);
+    return R - Math.hypot(16-x,16-y);
+  }
+  if(dir==='n') return 8+wob(x,ps)-y;
+  if(dir==='s') return y-(8+wob(x,ps+7));
+  if(dir==='w') return 8+wob(y,ps+13)-x;
+  return x-(8+wob(y,ps+19));
+}
+/* 复合瓦片：同一格内多邻居同时影响时取主导者，天然处理三岔/四岔角落；
+   对角邻居在共享角处圆角鼓包 */
+function renderTilePixels(A, dirNeighbors, mode, img, cx, cy){
+  const sa=TERRAIN[A].seed;
+  const band = mode==='seam' ? 3.0 : 2.2;
+  for(let y=0;y<TILE;y++){ for(let x=0;x<TILE;x++){
+    const Acolor=TERRAIN[A].color(x,y,sa);
+    const wx=(cx||0)*TILE+x, wy=(cy||0)*TILE+y;
+    const contribs=[];
+    for(let i=0;i<dirNeighbors.length;i++){ const {dir,nb}=dirNeighbors[i];
+      const p=distFor(dir,x,y,pairSeed(A,nb),mode);
+      if(p>-band){
+        const bl=clamp(0.5+p/band,0,1);
+        if(bl>0.001){
+          let u,v;
+          if(mode==='seam'){ if(dir==='n'){u=y;v=x;} else if(dir==='s'){u=15-y;v=x;} else if(dir==='w'){u=x;v=y;} else if(dir==='e'){u=15-x;v=y;} else {u=y;v=x;} }
+          else { u=y; v=x; }
+          contribs.push({bl,color:TERRAIN[nb].color(x,y,TERRAIN[nb].seed),p,nb,u,v});
+        }
+      }
+    }
+    const r=pixelColor(Acolor,contribs,x,y,mode,wx,wy);
+    let c=r.color;
+    if(A==='~' && Math.abs(r.p)<band && hash2(x,y,11)>0.25) c=mix(c,[235,245,252],0.9);
+    if(r.nb==='~' && Math.abs(r.p)<band && hash2(x,y,12)>0.72) c=mix(c,[235,245,252],0.7);
+    if((A==='L'||r.nb==='L') && Math.abs(r.p)<band*0.7) c=mix(c,[255,190,80],0.55);
+    const i=(y*TILE+x)*4; img.data[i]=c[0]; img.data[i+1]=c[1]; img.data[i+2]=c[2]; img.data[i+3]=255;
+  } }
+}
+function tileCanvas(A,B,dirs){
+  const cv=document.createElement('canvas'); cv.width=cv.height=TILE;
+  const ctx=cv.getContext('2d'); const img=ctx.createImageData(TILE,TILE);
+  const dirNeighbors=[]; for(const d of dirs) dirNeighbors.push({dir:d,nb:B});
+  renderTilePixels(A,dirNeighbors,'blob',img);
+  ctx.putImageData(img,0,0); return cv;
+}
+function cellTile(t,nbs,cx,cy){
+  const cv=document.createElement('canvas'); cv.width=cv.height=TILE;
+  const ctx=cv.getContext('2d'); const img=ctx.createImageData(TILE,TILE);
+  const dirNeighbors=[];
+  for(const dir of ['n','s','w','e','nw','ne','sw','se']){ const nb=nbs[dir]; if(nb && nb!==t) dirNeighbors.push({dir,nb}); }
+  renderTilePixels(t,dirNeighbors,'seam',img,cx,cy);
+  ctx.putImageData(img,0,0); return cv;
+}
+const baseOf=(t)=> baseOf.cache[t] || (baseOf.cache[t]=tileCanvas(t,t,[]));
+baseOf.cache={};
+/* 木桥瓦片：中间木板桥面 + 上下/左右水面，带桥下阴影与桥栏 */
+function bridgeTile(axis){
+  const cv=document.createElement('canvas'); cv.width=cv.height=TILE;
+  const ctx=cv.getContext('2d'); const img=ctx.createImageData(TILE,TILE);
+  for(let y=0;y<TILE;y++){ for(let x=0;x<TILE;x++){
+    const inDeck = axis==='h' ? (y>=4&&y<12) : (x>=4&&x<12);
+    let c;
+    if(inDeck){
+      const v=hash2(x,y,21); let r=152,g=104,b=64;
+      const seam = axis==='h' ? (y&3)===0 : (x&3)===0;
+      if(seam){ r-=42; g-=34; b-=26; }
+      if(v<0.15){ r-=16; g-=13; b-=10; } else if(v>0.8){ r+=14; g+=11; b+=6; }
+      const edge = axis==='h' ? (y===4||y===11) : (x===4||x===11);
+      if(edge){ r-=24; g-=19; b-=15; }
+      c=[r,g,b];
+    } else {
+      let cw=TERRAIN['~'].color(x,y,TERRAIN['~'].seed);
+      const shade = axis==='h' ? (y===3||y===12) : (x===3||x===12);
+      if(shade) cw=mix(cw,[8,14,34],0.4);
+      c=cw;
+    }
+    const i=(y*TILE+x)*4; img.data[i]=c[0]; img.data[i+1]=c[1]; img.data[i+2]=c[2]; img.data[i+3]=255;
+  } }
+  ctx.putImageData(img,0,0); return cv;
+}
+const bridgeCache={};
+const bridgeTileCached=(axis)=> bridgeCache[axis] || (bridgeCache[axis]=bridgeTile(axis));
+
+/* ============ 装饰与房屋 ============ */
+function drawShadow(ctx,px,py,rx,ry){ ctx.fillStyle='rgba(0,0,0,0.22)'; ctx.beginPath(); ctx.ellipse(px+8,py+ry, rx,ry*0.45,0,0,Math.PI*2); ctx.fill(); }
+function drawTree(ctx,px,py,type){
+  drawShadow(ctx,px,py,5,2);
+  if(type==='pine'){
+    ctx.fillStyle='#5d3a20'; ctx.fillRect(px+7,py+9,2,5);
+    const layers=[[8,1,6],[8,4,8],[8,7,10]];
+    ctx.fillStyle='#2a5a34';
+    for(const l of layers){ ctx.beginPath(); ctx.moveTo(px+l[0]-l[2],py+l[1]+l[2]); ctx.lineTo(px+l[0],py+l[1]-l[2]); ctx.lineTo(px+l[0]+l[2],py+l[1]+l[2]); ctx.closePath(); ctx.fill(); }
+    ctx.fillStyle='#3f7a46';
+    for(const l of layers){ ctx.beginPath(); ctx.moveTo(px+l[0]-l[2]*0.5,py+l[1]+l[2]*0.4); ctx.lineTo(px+l[0],py+l[1]-l[2]*0.6); ctx.lineTo(px+l[0]+l[2]*0.5,py+l[1]+l[2]*0.4); ctx.closePath(); ctx.fill(); }
+  } else {
+    ctx.fillStyle='#5d3a20'; ctx.fillRect(px+7,py+8,3,6);
+    ctx.fillStyle='#3a7d2e'; ctx.beginPath(); ctx.arc(px+9,py+6,5.5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#4c9a3a'; ctx.beginPath(); ctx.arc(px+7,py+5,3.2,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#61b34c'; ctx.beginPath(); ctx.arc(px+8,py+5,1.6,0,Math.PI*2); ctx.fill();
+  }
+}
+function drawRock(ctx,px,py){
+  drawShadow(ctx,px,py,4.5,1.6);
+  ctx.fillStyle='#8f8f99'; ctx.beginPath(); ctx.ellipse(px+8,py+10,4.6,3.6,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#a8a8b4'; ctx.beginPath(); ctx.ellipse(px+6.4,py+9,2,1.3,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#6f6f7c'; ctx.beginPath(); ctx.ellipse(px+10,py+12,2.4,1.4,0,0,Math.PI*2); ctx.fill();
+}
+function drawBush(ctx,px,py){
+  ctx.fillStyle='#3a7d2e'; ctx.beginPath(); ctx.ellipse(px+8,py+12,4.2,2.6,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#4c9a3a'; ctx.beginPath(); ctx.arc(px+6.5,py+11,2.4,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(px+9.5,py+11,2.2,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#61b34c'; ctx.beginPath(); ctx.arc(px+7,py+10.5,1.1,0,Math.PI*2); ctx.fill();
+}
+function drawFlower(ctx,px,py){
+  const cols=['#e84a4a','#f2c14e','#ffffff','#c770e8']; const col=cols[(hash2(px,py,4)*4)|0];
+  ctx.fillStyle=col; ctx.fillRect(px+6,py+11,2,2); ctx.fillRect(px+8,py+9,2,2); ctx.fillRect(px+10,py+11,2,2); ctx.fillRect(px+8,py+13,2,2);
+  ctx.fillStyle='#e8d23a'; ctx.fillRect(px+8,py+11,2,2);
+}
+function drawHouse(ctx,px,py){
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(px+8,py+14.5,6,2,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#d8c39a'; ctx.fillRect(px+3,py+7,10,7);
+  ctx.fillStyle='#c2ab7e'; ctx.fillRect(px+3,py+12,10,2);
+  ctx.fillStyle='#6b4a2f'; ctx.fillRect(px+7,py+10,3,4);
+  ctx.fillStyle='#bfe0ee'; ctx.fillRect(px+5,py+9,2,2); ctx.fillRect(px+10,py+9,2,2);
+  ctx.fillStyle='#a3432c'; ctx.beginPath(); ctx.moveTo(px+2,py+7); ctx.lineTo(px+8,py+1); ctx.lineTo(px+14,py+7); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#b8553a'; ctx.beginPath(); ctx.moveTo(px+3,py+7); ctx.lineTo(px+8,py+2); ctx.lineTo(px+13,py+7); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#5c5c64'; ctx.fillRect(px+7,py+1,2,2);
+  ctx.restore();
+}
+function decorFor(t,x,y,seed){
+  const r=hash2(x,y,seed*7+13);
+  if(t==='G'){ if(r<0.14) return r<0.04?'flower':(r<0.08?'bush':'tree'); if(r<0.19) return 'rock'; }
+  if(t==='D'){ if(r<0.22) return 'tree'; if(r<0.26) return 'rock'; }
+  if(t==='T'){ if(r<0.09) return 'rock'; if(r<0.12) return 'pine'; }
+  if(t==='W'){ if(r<0.14) return 'pine'; if(r<0.17) return 'rock'; }
+  if(t==='F'){ if(r<0.05) return 'rock'; }
+  return null;
+}
+
+/* ============ 地图生成（程序化 + 手工盖章） ============ */
+function genWorld(o){
+  const w=o.w,h=o.h,seed=o.seed;
+  const grid=[];
+  for(let y=0;y<h;y++){ const row=[];
+    for(let x=0;x<w;x++){
+      let hh=fbm(x*(o.freq||0.05),y*(o.freq||0.05),seed);
+      for(const b of (o.bumps||[])){ const d2=(x-b.x)*(x-b.x)+(y-b.y)*(y-b.y); hh += b.amp*Math.exp(-d2/(b.r*b.r*0.5)); }
+      hh=(hh-0.5)*1.35+0.5;
+      if(o.island){ const nx=1-Math.abs(x/(w-1)*2-1), ny=1-Math.abs(y/(h-1)*2-1); const sh=smooth(Math.min(nx,ny)); hh *= (0.5+0.5*smooth(smooth(sh))); }
+      hh=clamp(hh,0,1);
+      let t;
+      if(o.frozenOcean && hh<0.405) t=(hh<0.18?'~':'F');
+      else if(hh<0.335) t='~';
+      else if(hh<0.405) t='S';
+      else if(hh<0.75) t=(fbm(x*(o.freq2||0.05)+31.7,y*(o.freq2||0.05)+7.3,seed+99)>0.62?'D':'G');
+      else if(hh<0.87) t='T';
+      else t='W';
+      row.push(t);
+    } grid.push(row); }
+  if(o.lavaCrater){ const cx=o.lavaCrater.x,cy=o.lavaCrater.y,r=o.lavaCrater.r;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){ const d=Math.hypot(x-cx,y-cy); if(d<r) grid[y][x]=(d<r*0.38?'L':'T'); } }
+  if(o.lavaFlow){ for(const p of o.lavaFlow){ if(grid[p.y]&&grid[p.y][p.x]!==undefined&&grid[p.y][p.x]!=='~') grid[p.y][p.x]='L'; } }
+  const river=new Set();
+  for(const rv of (o.rivers||[])) carveRiverPoly(grid,rv.pts,w,h,rv.seed||seed,river);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    if(grid[y][x]==='L'){ const near=[-1,0,1,0,0,-1,0,1]; let sw=0; for(let k=0;k<8;k+=2){ const ny=y+near[k],nx=x+near[k+1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&grid[ny][nx]==='~') sw=1; } if(sw) grid[y][x]='T'; } }
+  for(const path of (o.roads||[])) for(let i=0;i<path.length-1;i++) stampLine(grid,path[i],path[i+1],river);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    if(grid[y][x]==='R' && river.has(x+','+y)){
+      const n=y>0?grid[y-1][x]:null, s=y<h-1?grid[y+1][x]:null, wc=x>0?grid[y][x-1]:null, ec=x<w-1?grid[y][x+1]:null;
+      const isR=(c)=> c==='R'||c==='B';
+      const roadEW=isR(wc)||isR(ec), roadNS=isR(n)||isR(s);
+      if((roadEW && n==='~'&&s==='~') || (roadNS && wc==='~'&&ec==='~')) grid[y][x]='B';
+    } }
+  const houses=[];
+  for(const pt of (o.houses||[])){ if(grid[pt[1]]&&grid[pt[1]][pt[0]]!==undefined){ const cell=grid[pt[1]][pt[0]]; if(cell!=='~'&&cell!=='B'&&cell!=='L'){ grid[pt[1]][pt[0]]='G'; houses.push({x:pt[0],y:pt[1]}); } } }
+  return {grid,w,h,houses,seed,river};
+}
+function carveRiverPoly(grid,pts,w,h,seed,river){
+  const mark=(x,y)=>{ if(x<0||y<0||x>=w||y>=h) return; grid[y][x]='~'; river.add(x+','+y); };
+  for(let i=0;i<pts.length-1;i++){
+    const a=pts[i], b=pts[i+1];
+    const dx=b.x-a.x, dy=b.y-a.y;
+    const n=Math.max(Math.abs(dx),Math.abs(dy));
+    for(let k=0;k<=n;k++){
+      const t=k/n;
+      const tx=Math.round(a.x+dx*t), ty=Math.round(a.y+dy*t);
+      const jx=tx+Math.round(wob(k,seed+tx)*1.0), jy=ty+Math.round(wob(k,seed+ty+3)*1.0);
+      if(Math.abs(dx)>=Math.abs(dy)){ mark(jx,jy-1); mark(jx,jy); mark(jx,jy+1); }
+      else { mark(jx-1,jy); mark(jx,jy); mark(jx+1,jy); }
+    }
+  }
+}
+function stampLine(grid,a,b,river){
+  const n=Math.max(Math.abs(b.x-a.x),Math.abs(b.y-a.y));
+  for(let i=0;i<=n;i++){ const t=i/n; const tx=Math.round(a.x+(b.x-a.x)*t), ty=Math.round(a.y+(b.y-a.y)*t);
+    if(grid[ty]&&grid[ty][tx]!==undefined){ const cur=grid[ty][tx]; if(cur!=='~' || (river&&river.has(tx+','+ty))) grid[ty][tx]='R'; } }
+}
+function genDungeon(o){
+  const w=o.w,h=o.h; const grid=[];
+  for(let y=0;y<h;y++){ const row=[]; for(let x=0;x<w;x++) row.push('C'); grid.push(row); }
+  const rooms=[
+    {x:3,y:3,w:9,h:7},{x:16,y:3,w:12,h:8},{x:31,y:4,w:7,h:6},
+    {x:3,y:15,w:8,h:9},{x:16,y:14,w:14,h:10},{x:33,y:16,w:6,h:8}
+  ];
+  for(const r of rooms) for(let yy=r.y+1;yy<r.y+r.h-1;yy++) for(let xx=r.x+1;xx<r.x+r.w-1;xx++) grid[yy][xx]='P';
+  const centers=rooms.map(r=>[Math.floor(r.x+r.w/2),Math.floor(r.y+r.h/2)]);
+  for(let i=0;i<centers.length-1;i++) carveL(grid,centers[i],centers[i+1]);
+  for(let yy=4;yy<=10;yy++) for(let xx=31;xx<=37;xx++){ if((yy-7)*(yy-7)+(xx-34)*(xx-34)<=2.6) grid[yy][xx]='L'; }
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(grid[y][x]==='P' && hash2(x,y,9)<0.04) grid[y][x]='T'; }
+  return {grid,w,h,houses:[],seed:o.seed||1};
+}
+function carveL(g,a,b){ const x1=a[0],y1=a[1],x2=b[0],y2=b[1];
+  for(let x=Math.min(x1,x2);x<=Math.max(x1,x2);x++) if(g[y1]) g[y1][x]='P';
+  for(let y=Math.min(y1,y2);y<=Math.max(y1,y2);y++) if(g[y]) g[y][x2]='P';
+}
+
+const MAPS=[
+ {id:'main',name:'翡翠大陆',seed:42,w:44,h:30,island:true,
+  bumps:[{x:14,y:17,r:5,amp:-0.30},{x:28,y:6,r:7,amp:0.55},{x:36,y:13,r:6,amp:0.42},{x:24,y:13,r:5,amp:0.36}],
+  rivers:[{pts:[{x:30,y:8},{x:28,y:11},{x:24,y:14},{x:22,y:18},{x:23,y:23},{x:22,y:27}]}],
+  roads:[[{x:20,y:29},{x:20,y:22},{x:20,y:16},{x:27,y:13},{x:34,y:12}]],
+  houses:[[20,22],[27,13],[34,12]]},
+ {id:'tundra',name:'极地冻原',seed:7,w:44,h:30,island:true,frozenOcean:true,
+  bumps:[{x:22,y:7,r:8,amp:0.55},{x:30,y:15,r:6,amp:0.4},{x:16,y:13,r:5,amp:0.26},{x:13,y:21,r:5,amp:0.22}],
+  rivers:[{pts:[{x:24,y:6},{x:20,y:12},{x:16,y:16},{x:14,y:18},{x:12,y:22},{x:13,y:27}]}],
+  roads:[[{x:13,y:21},{x:16,y:13},{x:22,y:9}]],
+  houses:[[16,13],[22,9]]},
+ {id:'volcano',name:'火山群岛',seed:17,w:46,h:28,island:true,
+  bumps:[{x:26,y:11,r:7,amp:0.55},{x:9,y:8,r:6,amp:0.38},{x:36,y:17,r:6,amp:0.36},{x:20,y:23,r:6,amp:0.32}],
+  lavaCrater:{x:26,y:11,r:7},
+  lavaFlow:[{x:26,y:11},{x:27,y:15},{x:28,y:19},{x:29,y:22}],
+  roads:[[{x:14,y:22},{x:18,y:15},{x:23,y:10}]],
+  houses:[[18,15]]},
+ {id:'dungeon',name:'熔火地牢',w:40,h:28,dungeon:true}
+];
+
+/* ============ 渲染 ============ */
+const cv=document.getElementById('cv');
+const wrap=document.getElementById('mapwrap');
+let cacheCanvas=null, currentMap=null, currentDef=null, raf=null;
+
+function bridgeAxis(x,y,grid,w,h){
+  const n=y>0?grid[y-1][x]:null, s=y<h-1?grid[y+1][x]:null, wc=x>0?grid[y][x-1]:null, ec=x<w-1?grid[y][x+1]:null;
+  const isW=(c)=> c==='~';
+  if(isW(n)&&isW(s)) return 'h';
+  if(isW(wc)&&isW(ec)) return 'v';
+  return 'h';
+}
+function buildMapCache(m,opts){
+  const {grid,w,h}=m; const houses=m.houses||[];
+  const cache=document.createElement('canvas'); cache.width=w*TILE; cache.height=h*TILE;
+  const ctx=cache.getContext('2d');
+  const nmap=(c)=> c==='B'?'R':c;
+  const nbrs=(x,y)=>({ n:y>0?nmap(grid[y-1][x]):null, s:y<h-1?nmap(grid[y+1][x]):null, w:x>0?nmap(grid[y][x-1]):null, e:x<w-1?nmap(grid[y][x+1]):null,
+    nw:(y>0&&x>0)?nmap(grid[y-1][x-1]):null, ne:(y>0&&x<w-1)?nmap(grid[y-1][x+1]):null,
+    sw:(y<h-1&&x>0)?nmap(grid[y+1][x-1]):null, se:(y<h-1&&x<w-1)?nmap(grid[y+1][x+1]):null });
+  const isHouse=(x,y)=> houses.some(hm=>hm.x===x&&hm.y===y);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const t=grid[y][x], px=x*TILE, py=y*TILE;
+    if(t==='B'){ ctx.drawImage(bridgeTileCached(bridgeAxis(x,y,grid,w,h)),px,py); }
+    else {
+      ctx.drawImage(cellTile(t,nbrs(x,y),x,y),px,py);
+      const nb=nbrs(x,y);
+      for(const d of ['n','s','w','e']){ const v=nb[d]; if(v && TERRAIN[v] && TERRAIN[v].elev>TERRAIN[t].elev){ const diff=TERRAIN[v].elev-TERRAIN[t].elev; const a=Math.min(0.32,0.09+diff*0.07), a2=a*0.3;
+        if(d==='n'){ ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(px,py,TILE,1); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(px,py+1,TILE,1); }
+        else if(d==='s'){ ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(px,py+TILE-1,TILE,1); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(px,py+TILE-2,TILE,1); }
+        else if(d==='w'){ ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(px,py,1,TILE); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(px+1,py,1,TILE); }
+        else { ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(px+TILE-1,py,1,TILE); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(px+TILE-2,py,1,TILE); } } }
+      for(const d of ['n','s','w','e']){ const v=nb[d]; if(v && TERRAIN[v] && TERRAIN[t].elev-TERRAIN[v].elev>=2){ ctx.fillStyle='rgba(0,0,0,0.2)';
+        if(d==='n')ctx.fillRect(px,py,TILE,1); else if(d==='s')ctx.fillRect(px,py+TILE-1,TILE,1);
+        else if(d==='w')ctx.fillRect(px,py,1,TILE); else ctx.fillRect(px+TILE-1,py,1,TILE); } }
+    }
+    if(opts.decor){
+      if(isHouse(x,y)) drawHouse(ctx,px,py);
+      else {
+        const dc=decorFor(t,x,y,m.seed||1);
+        if(dc){ let nw=false;
+          for(let dy=-1;dy<=1&&!nw;dy++)for(let dx=-1;dx<=1&&!nw;dx++){ if(dx===0&&dy===0) continue; const nx=x+dx,ny=y+dy; if(nx<0||ny<0||nx>=w||ny>=h){ nw=true; break; } const c=grid[ny][nx]; if(c==='~'||c==='F'||c==='L') nw=true; }
+          if(!nw){ if(dc==='tree')drawTree(ctx,px,py,'tree'); else if(dc==='pine')drawTree(ctx,px,py,'pine'); else if(dc==='rock')drawRock(ctx,px,py); else if(dc==='bush')drawBush(ctx,px,py); else if(dc==='flower')drawFlower(ctx,px,py); }
+        }
+      }
+    }
+  }
+  return cache;
+}
+function drawGridOverlay(ctx){
+  const w=currentMap.w,h=currentMap.h;
+  ctx.strokeStyle='rgba(0,0,0,0.14)'; ctx.lineWidth=1;
+  for(let x=0;x<=w;x++){ ctx.beginPath(); ctx.moveTo(x*TILE+0.5,0); ctx.lineTo(x*TILE+0.5,h*TILE); ctx.stroke(); }
+  for(let y=0;y<=h;y++){ ctx.beginPath(); ctx.moveTo(0,y*TILE+0.5); ctx.lineTo(w*TILE,y*TILE+0.5); ctx.stroke(); }
+}
+function drawAnim(ctx,now){
+  const g=currentMap.grid, w=currentMap.w, h=currentMap.h; const sp=speedEl.value*1;
+  const river=currentMap.river||new Set();
+  const t=now/1000*sp;
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){ const c=g[y][x]; const px=x*TILE, py=y*TILE;
+    if(c==='~'){
+      if(river.has(x+','+y)){ const k=hash2(x,y,5);
+        const fx=Math.floor(k*16+t*3.2)%16, fy=Math.floor((k*5+t*0.9))%16;
+        ctx.globalAlpha=0.3; ctx.fillStyle='#dcefff'; ctx.fillRect(px+fx,py+fy,3,1);
+        ctx.globalAlpha=0.18; ctx.fillStyle='#f0faff'; ctx.fillRect(px+((fx+4)%16),py+((fy+3)%16),2,1);
+      } else { const k=hash2(x,y,1);
+        const dx1=Math.floor(k*16+t*2.2)%16, dy1=Math.floor((k*7+t*1.1))%16;
+        const dx2=Math.floor((k*11+t*1.3+5)%16), dy2=Math.floor((k*3+t*1.7+16)%16);
+        ctx.globalAlpha=0.35; ctx.fillStyle='#cfe8ff'; ctx.fillRect(px+dx1,py+dy1,2,1);
+        ctx.globalAlpha=0.22; ctx.fillStyle='#eaf6ff'; ctx.fillRect(px+dx2,py+dy2,2,1);
+      }
+    } else if(c==='L'){ const k=hash2(x,y,3); const pulse=0.5+0.3*Math.sin(t*3+k*6.28);
+      ctx.globalAlpha=pulse*0.55; ctx.fillStyle='#ffc060';
+      const dx=Math.floor(k*16+t)%16, dy=Math.floor((k*5+t*0.7)%16); ctx.fillRect(px+dx,py+dy,2,2);
+    } }
+  ctx.restore(); ctx.globalAlpha=1;
+}
+function drawFrame(now){
+  const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=false;
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.drawImage(cacheCanvas,0,0);
+  if(animateEl.checked) drawAnim(ctx, now||performance.now());
+  if(gridEl.checked) drawGridOverlay(ctx);
+}
+function startAnim(){ cancelAnimationFrame(raf); const loop=(t)=>{ drawFrame(t); raf=requestAnimationFrame(loop); }; raf=requestAnimationFrame(loop); }
+
+/* ============ 控件 ============ */
+const mapbar=document.getElementById('mapbar'), seedinfo=document.getElementById('seedinfo');
+const zoomEl=document.getElementById('zoom'), gridEl=document.getElementById('grid'), decorEl=document.getElementById('decor'), animateEl=document.getElementById('animate'), speedEl=document.getElementById('speed');
+function applyZoom(){ const z=zoomEl.value*1; cv.style.width=(cv.width*z)+'px'; cv.style.height=(cv.height*z)+'px'; }
+function fit(){ if(!cacheCanvas) return; const z=clamp(Math.min((wrap.clientWidth-16)/(cacheCanvas.width),(wrap.clientHeight-16)/(cacheCanvas.height)),0.5,3); zoomEl.value=z.toFixed(1); applyZoom(); }
+function loadMap(def){
+  currentDef=def;
+  const data=def.dungeon? genDungeon(def) : genWorld(def);
+  currentMap=data;
+  cacheCanvas=buildMapCache(data,{decor:decorEl.checked});
+  cv.width=data.w*TILE; cv.height=data.h*TILE;
+  fit(); updateStats();
+  startAnim();
+}
+function updateStats(){
+  seedinfo.textContent=currentDef.name+' · 种子 '+currentMap.seed+' · '+currentMap.w+'×'+currentMap.h;
+  for(const b of statsBox.querySelectorAll('b')){ b.parentNode.removeChild(b); }
+  const counts={}; for(const row of currentMap.grid) for(const c of row) counts[c]=(counts[c]||0)+1;
+  for(const ch of Object.keys(counts).sort((a,b)=>counts[b]-counts[a])){ if(!TERRAIN[ch]) continue;
+    const b=document.createElement('b'); const ic=document.createElement('canvas'); ic.width=12; ic.height=12; ic.getContext('2d').drawImage(baseOf(ch),0,0,16,16,0,0,12,12);
+    b.appendChild(ic); const t=document.createElement('span'); t.textContent=TERRAIN[ch].name+' '+counts[ch]; b.appendChild(t); statsBox.appendChild(b); }
+}
+for(const m of MAPS){ const b=document.createElement('button'); b.className='btn'; b.textContent=m.name; b.onclick=()=>{ document.querySelectorAll('#mapbar .btn').forEach(x=>x.classList.remove('active')); b.classList.add('active'); loadMap(m); }; mapbar.appendChild(b); }
+const statsBox=document.createElement('div'); statsBox.className='stats'; statsBox.id='statsBox';
+const sp=document.createElement('div'); sp.className='panel'; const sp2=document.createElement('h2'); sp2.textContent='地图构成'; sp.appendChild(sp2); sp.appendChild(statsBox);
+document.getElementById('palette').appendChild(sp);
+document.getElementById('btnReroll').onclick=()=>{ currentDef.seed=(currentDef.seed+137)&0xffff; loadMap(currentDef); };
+document.getElementById('btnFit').onclick=fit;
+zoomEl.oninput=applyZoom;
+gridEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };
+decorEl.onchange=()=>{ cacheCanvas=buildMapCache(currentMap,{decor:decorEl.checked}); drawFrame(); };
+animateEl.onchange=()=>{ if(animateEl.checked) startAnim(); else { cancelAnimationFrame(raf); drawFrame(); } };
+window.addEventListener('resize',fit);
+
+/* ============ 图鉴面板 ============ */
+function buildPalette(){
+  const pal=document.getElementById('palette');
+  const p1=document.createElement('div'); p1.className='panel';
+  const h1=document.createElement('h2'); h1.textContent='基础瓦片（16×16 程序化生成）';
+  p1.appendChild(h1); const g1=document.createElement('div'); g1.className='tiles';
+  for(const [ch] of PALETTE_ORDER){ const t=document.createElement('div'); t.className='tile';
+    const cvn=document.createElement('canvas'); cvn.width=cvn.height=TILE; cvn.getContext('2d').drawImage(baseOf(ch),0,0);
+    t.appendChild(cvn); const n=document.createElement('div'); n.className='n'; n.textContent=TERRAIN[ch].name;
+    const l=document.createElement('div'); l.className='l'; l.textContent=ch+' · 海拔'+TERRAIN[ch].elev;
+    t.appendChild(n); t.appendChild(l); g1.appendChild(t); }
+  p1.appendChild(g1); pal.appendChild(p1);
+
+  const p2=document.createElement('div'); p2.className='panel';
+  const h2=document.createElement('h2'); h2.textContent='过渡瓦片 · 完整16片集（Wang 四邻位掩码）';
+  p2.appendChild(h2);
+  const pairs16=[['~','S'],['G','S'],['G','T']];
+  const pairs4=[['~','F'],['T','W'],['T','L'],['R','G'],['P','C']];
+  for(const [a,b] of pairs16){
+    const lab=document.createElement('div'); lab.className='pair'; lab.textContent=TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 16片完整过渡';
+    p2.appendChild(lab); const set=document.createElement('div'); set.className='wset';
+    for(let bits=0;bits<16;bits++){ const dirs=[]; if(bits&1)dirs.push('n'); if(bits&2)dirs.push('e'); if(bits&4)dirs.push('s'); if(bits&8)dirs.push('w'); set.appendChild(tileEl(a,b,dirs,8,bitsLabel(bits))); }
+    p2.appendChild(set);
+  }
+  for(const [a,b] of pairs4){
+    const lab=document.createElement('div'); lab.className='pair'; lab.textContent=TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 4边缘过渡';
+    p2.appendChild(lab); const set=document.createElement('div'); set.className='wset t4';
+    const nm={n:'上',s:'下',w:'左',e:'右'};
+    for(const d of ['n','s','w','e']) set.appendChild(tileEl(a,b,[d],8,nm[d]));
+    p2.appendChild(set);
+  }
+  pal.appendChild(p2);
+
+  const p3=document.createElement('div'); p3.className='panel';
+  const h3=document.createElement('h2'); h3.textContent='装饰物（自动散布 + 房屋）';
+  p3.appendChild(h3); const d3=document.createElement('div'); d3.className='decors';
+  const sprites=[['落叶树',(c)=>{c.clearRect(0,0,16,16);drawTree(c,0,0,'tree');}],['针叶树',(c)=>{c.clearRect(0,0,16,16);drawTree(c,0,0,'pine');}],['岩石',(c)=>{c.clearRect(0,0,16,16);drawRock(c,0,0);}],['灌木',(c)=>{c.clearRect(0,0,16,16);drawBush(c,0,0);}],['花朵',(c)=>{c.clearRect(0,0,16,16);drawFlower(c,0,0);}],['房屋',(c)=>{c.clearRect(0,0,16,16);drawHouse(c,0,0);}],['木桥·横',(c)=>{c.clearRect(0,0,16,16);c.drawImage(bridgeTileCached('h'),0,0);}],['木桥·纵',(c)=>{c.clearRect(0,0,16,16);c.drawImage(bridgeTileCached('v'),0,0);}]];
+  for(const [name,fn] of sprites){ const w=document.createElement('div'); w.className='tile';
+    const cn=document.createElement('canvas'); cn.width=cn.height=TILE; fn(cn.getContext('2d'),0,0); w.appendChild(cn);
+    const n=document.createElement('div'); n.className='n'; n.textContent=name; w.appendChild(n); d3.appendChild(w); }
+  p3.appendChild(d3); pal.appendChild(p3);
+
+  const p4=document.createElement('div'); p4.className='panel';
+  const h4=document.createElement('h2'); h4.textContent='图例 · 海拔（高低地形差）';
+  p4.appendChild(h4); const leg=document.createElement('div'); leg.className='legend';
+  for(const [ch] of PALETTE_ORDER){ const s=document.createElement('span');
+    const cn=document.createElement('canvas'); cn.width=cn.height=TILE; cn.getContext('2d').drawImage(baseOf(ch),0,0);
+    s.appendChild(cn); const t=document.createElement('span'); t.textContent=TERRAIN[ch].name+' · 海拔'+TERRAIN[ch].elev; s.appendChild(t); leg.appendChild(s); }
+  p4.appendChild(leg); pal.appendChild(p4);
+
+  const p5=document.createElement('div'); p5.className='panel';
+  const h5=document.createElement('h2'); h5.textContent='说明';
+  p5.appendChild(h5); const n5=document.createElement('div'); n5.className='note';
+  n5.innerHTML='所有瓦片均为逐像素程序化生成（值噪声 + 色带 + 四邻位掩码过渡 + 2×2 Bayer 抖动混合）。每格瓦片按 4 邻位掩码合成，多邻居交界处取主导地形，三岔/四岔角落过渡自然。河流自动切割陆地、道路跨河处自动生成木桥并带方向性流水动画。浪花泡沫、岩浆辉光、海拔阴影与悬崖棱线用于强化自然过渡与高低地形差。支持 ?map=0..3 直接打开对应地图，点「换种子」可重新生成世界。';
+  p5.appendChild(n5); pal.appendChild(p5);
+}
+function tileEl(A,B,dirs,bnd,label){
+  const w=document.createElement('div'); w.className='tw';
+  const cn=document.createElement('canvas'); cn.width=cn.height=TILE; cn.getContext('2d').drawImage(tileCanvas(A,B,dirs),0,0);
+  w.appendChild(cn); if(label){ const t=document.createElement('div'); t.className='tl'; t.textContent=label; w.appendChild(t); }
+  return w;
+}
+function bitsLabel(bits){ const n=[]; if(bits&1)n.push('上'); if(bits&2)n.push('右'); if(bits&4)n.push('下'); if(bits&8)n.push('左'); return n.length?n.join(''):'纯'; }
+
+/* ============ 启动 ============ */
+buildPalette();
+const qm=parseInt(new URLSearchParams(location.search).get('map')||'0',10);
+const first=MAPS[clamp(qm,0,MAPS.length-1)];
+loadMap(first);
+</script>
+</body>
+</html>

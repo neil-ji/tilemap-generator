@@ -1,0 +1,15 @@
+{
+  "name": "tail-texture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "像素地形瓦片集 · 程序化过渡 · 多地图查看器",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^7.3.6"
+  }
+}

@@ -3,6 +3,49 @@ import { TILE, hash2 } from './util.js';
 import { TERRAIN } from './terrain.js';
 import { renderCell } from './tiles.js';
 
+/* ============ 高度差覆盖层（post-blit） ============
+   Phase 1：纯渲染增强，复用邻格 elev，零数据改动、不影响签名缓存。
+   diff==1 缓坡 = 低格投影加深 + 高格 1px 亮唇边（受光）；
+   diff>=2 崖壁 = 高格 3px 岩壁断面条（1px 近黑边 + 2px 压暗基色 + 岩类层理）+ 低格投影加深；
+   低格为海洋 ~ 时投影减弱（水下崖基）。拐角/交界各自 fillRect 自然重叠成 L/T 形。 */
+const ROCKY={ T:1,C:1,K:1 };
+const _base={};
+function baseColor(ch){ /* 该地形 4 采样平均基色，供唇边/断面条提亮与压暗 */
+  let c=_base[ch]; if(c) return c;
+  const f=TERRAIN[ch].color,s=TERRAIN[ch].seed;
+  const p=[[7,7],[8,8],[7,8],[8,7]];
+  c=[0,0,0];
+  for(let i=0;i<4;i++){ const q=f(p[i][0],p[i][1],s); c[0]+=q[0]; c[1]+=q[1]; c[2]+=q[2]; }
+  c[0]>>=2; c[1]>>=2; c[2]>>=2;
+  return _base[ch]=c;
+}
+/* 与格边齐平的 th-px 条 / 距格边 1px 起的 th-px 条（按方向） */
+function edgeOuter(d,px,py,th){ if(d==='n')return [px,py,TILE,th]; if(d==='s')return [px,py+TILE-th,TILE,th]; if(d==='w')return [px,py,th,TILE]; return [px+TILE-th,py,th,TILE]; }
+function edgeInner(d,px,py,th){ if(d==='n')return [px,py+1,TILE,th]; if(d==='s')return [px,py+TILE-1-th,TILE,th]; if(d==='w')return [px+1,py,th,TILE]; return [px+TILE-1-th,py,th,TILE]; }
+function drawLip(ctx,px,py,d,ch){ /* 缓坡亮唇：高格朝低格 1px 受光窄边（基色暖提亮） */
+  const b=baseColor(ch);
+  ctx.fillStyle='rgba('+Math.min(255,b[0]+58)+','+Math.min(255,b[1]+48)+','+Math.min(255,b[2]+36)+',0.35)';
+  const r=edgeOuter(d,px,py,1); ctx.fillRect(r[0],r[1],r[2],r[3]);
+}
+function drawCliff(ctx,px,py,d,ch){ /* 崖壁断面条：高格朝低格 3px（近黑边 + 压暗 40% 基色） */
+  const b=baseColor(ch);
+  const r=edgeOuter(d,px,py,1); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(r[0],r[1],r[2],r[3]);
+  const q=edgeInner(d,px,py,2);
+  ctx.fillStyle='rgb('+(b[0]*0.6|0)+','+(b[1]*0.6|0)+','+(b[2]*0.6|0)+')'; ctx.fillRect(q[0],q[1],q[2],q[3]);
+  const horiz=(d==='n'||d==='s');
+  if(ROCKY[ch]){ /* 岩类：弱层理（每 4px 淡暗线）+ hash2 岩屑，保持断面整体感 */
+    ctx.fillStyle='rgba(0,0,0,0.2)';
+    for(let k=0;k<4;k++){ if(horiz)ctx.fillRect(q[0]+k*4,q[1],1,q[3]); else ctx.fillRect(q[0],q[1]+k*4,q[2],1); }
+    ctx.fillStyle='rgba(0,0,0,0.15)';
+    for(let k=0;k<2;k++){ const u=(hash2(px,py,k+37)*TILE)|0, o=(hash2(px,py,k+91)*2)|0;
+      if(horiz)ctx.fillRect(q[0]+u,q[1]+o,1,1); else ctx.fillRect(q[0]+o,q[1]+u,1,1); }
+  } else { /* 非岩类：少量碎屑 */
+    ctx.fillStyle='rgba(0,0,0,0.15)';
+    for(let k=0;k<2;k++){ const u=(hash2(px,py,k+73)*TILE)|0, o=(hash2(px,py,k+13)*2)|0;
+      if(horiz)ctx.fillRect(q[0]+u,q[1]+o,1,1); else ctx.fillRect(q[0]+o,q[1]+u,1,1); }
+  }
+}
+
 export function buildMapCache(m){
   const {grid,w,h}=m;
   const cache=document.createElement('canvas'); cache.width=w*TILE; cache.height=h*TILE;
@@ -23,14 +66,24 @@ export function buildMapCache(m){
     const nb=nbrs(x,y); /* 与下方海拔阴影/悬崖棱线共用一次邻接计算 */
     const flatTile=renderCell(t,nb,img,x,y);
     if(flatTile) ctx.drawImage(flatTile,px,py); else ctx.putImageData(img,px,py);
-    for(const d of ['n','s','w','e']){ const v=nb[d]; if(v && TERRAIN[v] && TERRAIN[v].elev>TERRAIN[t].elev){ const diff=TERRAIN[v].elev-TERRAIN[t].elev; const a=Math.min(0.32,0.09+diff*0.07), a2=a*0.3;
-      if(d==='n'){ ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(px,py,TILE,1); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(px,py+1,TILE,1); }
-      else if(d==='s'){ ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(px,py+TILE-1,TILE,1); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(px,py+TILE-2,TILE,1); }
-      else if(d==='w'){ ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(px,py,1,TILE); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(px+1,py,1,TILE); }
-      else { ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(px+TILE-1,py,1,TILE); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(px+TILE-2,py,1,TILE); } } }
-    for(const d of ['n','s','w','e']){ const v=nb[d]; if(v && TERRAIN[v] && TERRAIN[t].elev-TERRAIN[v].elev>=2){ ctx.fillStyle='rgba(0,0,0,0.2)';
-      if(d==='n')ctx.fillRect(px,py,TILE,1); else if(d==='s')ctx.fillRect(px,py+TILE-1,TILE,1);
-      else if(d==='w')ctx.fillRect(px,py,1,TILE); else ctx.fillRect(px+TILE-1,py,1,TILE); } }
+    /* 高度差覆盖层（post-blit，复用邻格 elev，零数据改动、不影响签名缓存）：
+       dh>0 邻格更高 → 本格为低格，画朝向高格的投影（diff==1 缓坡 0.28 / diff>=2 崖壁 0.42，海洋中减弱）；
+       dh<0 邻格更低 → 本格为高格，画朝向低格的 1px 亮唇边（缓坡）或 3px 岩壁断面条（崖壁）；
+       拐角/交界各自 fillRect 自然重叠成 L/T 形。 */
+    for(const d of ['n','s','w','e']){
+      const v=nb[d]; if(!v || !TERRAIN[v]) continue;
+      const dh=TERRAIN[v].elev-TERRAIN[t].elev;
+      if(dh>0){
+        let a=dh===1?0.28:0.42, a2=a*0.35;
+        if(t==='~'){ a*=0.3; a2*=0.3; } /* 水下崖基：海洋中投影减弱 */
+        let r=edgeOuter(d,px,py,1); ctx.fillStyle='rgba(0,0,0,'+a+')'; ctx.fillRect(r[0],r[1],r[2],r[3]);
+        r=edgeInner(d,px,py,1); ctx.fillStyle='rgba(0,0,0,'+a2+')'; ctx.fillRect(r[0],r[1],r[2],r[3]);
+      } else if(dh===-1){
+        drawLip(ctx,px,py,d,t);
+      } else if(dh<=-2){
+        drawCliff(ctx,px,py,d,t);
+      }
+    }
   }
   cache.animCells=animCells;
   return cache;

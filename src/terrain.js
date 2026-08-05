@@ -20,11 +20,12 @@ export function cDirt(x,y,s){ const v=hash2(x,y,s); let r=152,g=99,b=57;
   if(v<0.2){ r-=24; g-=18; b-=12; } else if(v>0.82){ r+=20; g+=16; b+=8; }
   if(v>0.97){ r+=40; g+=52; b+=60; }
   return clampc(r,g,b); }
-export function cRoad(x,y,s){ const v=hash2(x,y,s); let r=170,g=156,b=124;
-  if((y&3)===0){ r-=30; g-=30; b-=28; }
-  else if(((x+((y>>2)&1)*2)&3)===0){ r-=14; g-=14; b-=16; }
-  if(v<0.18){ r-=16; g-=15; b-=14; } else if(v>0.82){ r+=14; g+=12; b+=10; }
-  if(v>0.97){ r+=24; g+=22; b+=18; }
+export function cRoad(x,y,s){ const v=hash2(x,y,s); let r=186,g=140,b=88;
+  // 土路：暖棕压实土面（比泥地 D 更亮更暖），两道横向碾痕车辙 + 稀疏沙砾点
+  if((y&3)===1 || (y&3)===3){ r-=16; g-=13; b-=9; }
+  else if((y&3)===0){ r+=9; g+=8; b+=5; }
+  if(v<0.15){ r-=18; g-=15; b-=10; } else if(v>0.85){ r+=16; g+=13; b+=9; }
+  if(v>0.97){ r+=26; g+=22; b+=16; }
   return clampc(r,g,b); }
 export function cStone(x,y,s){ const v=hash2(x,y,s); let r=143,g=143,b=155;
   if(v<0.2){ r-=30; g-=30; b-=28; } else if(v>0.78){ r+=22; g+=22; b+=18; }

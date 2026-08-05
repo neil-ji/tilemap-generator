@@ -20,19 +20,9 @@ export function buildPalette(){
   p2.appendChild(h2);
   const pairs16=[['~','S'],['~','A'],['G','S'],['G','H'],['G','M'],['~','U'],['G','Q'],['T','V']];
   const pairs4=[['~','F'],['T','W'],['T','L'],['R','G'],['P','C'],['T','K'],['F','N'],['A','S'],['E','G'],['T','Q'],['W','X'],['T','X'],['P','O'],['P','#'],['S','@'],['G','Z'],['E','Z'],['T','Y']];
-  for(const [a,b] of pairs16){
-    const lab=document.createElement('div'); lab.className='pair'; lab.textContent=TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 16片完整过渡';
-    p2.appendChild(lab); const set=document.createElement('div'); set.className='wset';
-    for(let bits=0;bits<16;bits++){ const dirs=[]; if(bits&1)dirs.push('n'); if(bits&2)dirs.push('e'); if(bits&4)dirs.push('s'); if(bits&8)dirs.push('w'); set.appendChild(tileEl(a,b,dirs,8,bitsLabel(bits))); }
-    p2.appendChild(set);
-  }
-  for(const [a,b] of pairs4){
-    const lab=document.createElement('div'); lab.className='pair'; lab.textContent=TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 4边缘过渡';
-    p2.appendChild(lab); const set=document.createElement('div'); set.className='wset t4';
-    const nm={n:'上',s:'下',w:'左',e:'右'};
-    for(const d of ['n','s','w','e']) set.appendChild(tileEl(a,b,[d],8,nm[d]));
-    p2.appendChild(set);
-  }
+  /* 过渡对默认折叠 + 首次展开时懒渲染：启动只建 26 个按钮，过渡 canvas 点击展开才生成 */
+  for(const [a,b] of pairs16) p2.appendChild(makePairRow(a,b,TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 16片完整过渡',true));
+  for(const [a,b] of pairs4) p2.appendChild(makePairRow(a,b,TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 4边缘过渡',false));
   pal.appendChild(p2);
 
   const p4=document.createElement('div'); p4.className='panel';
@@ -48,6 +38,27 @@ export function buildPalette(){
   p5.appendChild(h5); const n5=document.createElement('div'); n5.className='note';
   n5.innerHTML='通过 URL 参数 ?map=0..4 可直达对应地图（如 index.html?map=2），点「换种子」可重新生成世界。所有瓦片均为逐像素程序化生成（值噪声 + 色带 + 四邻位掩码过渡 + 2×2 Bayer 抖动混合）。26 种地形瓦片（深水/海洋/浅滩/泥滩/沙滩/沙漠/草原灌木/草地/森林/泥地/沼泽/道路/碎石坡/岩石/高原草甸/岩壁/冰原/苔原/雪地/雪岩/岩浆/焦土/石板地板/洞窟地面/木地板/深渊裂隙），任意配对自动支持 Wang 完整过渡，多邻居交界处取主导地形。河流自动切割陆地、道路在河岸自然终止，河流连贯完整。浪花泡沫、浅滩沫花、沼泽苇秆、岩浆辉光、焦土裂纹与海拔阴影/悬崖棱线用于强化自然过渡与高低地形差。画面纯净无前景装饰。';
   p5.appendChild(n5); pal.appendChild(p5);
+}
+/* 过渡对分组（P1-3）：默认折叠，仅建一个「▸ 标题」按钮；首次展开才懒渲染 wset 内的过渡 canvas。
+   折叠状态面板高度 = 标题 + 26 个紧凑按钮行，不再被 200 个过渡 canvas 撑满侧栏；展开后内容缓存，反复开合无重建、无闪烁。 */
+function makePairRow(a,b,label,is16){
+  const row=document.createElement('div'); row.className='pair-row';
+  const btn=document.createElement('button'); btn.type='button'; btn.className='pair-toggle';
+  btn.setAttribute('aria-expanded','false'); btn.title='展开/收起该地形过渡对';
+  const tri=document.createElement('span'); tri.className='tri'; tri.textContent='▸'; tri.setAttribute('aria-hidden','true');
+  btn.appendChild(tri); btn.appendChild(document.createTextNode(label));
+  const set=document.createElement('div'); set.className=is16?'wset':'wset t4'; set.hidden=true;
+  row.appendChild(btn); row.appendChild(set);
+  let built=false;
+  const fillSet=()=>{
+    if(is16){ for(let bits=0;bits<16;bits++){ const dirs=[]; if(bits&1)dirs.push('n'); if(bits&2)dirs.push('e'); if(bits&4)dirs.push('s'); if(bits&8)dirs.push('w'); set.appendChild(tileEl(a,b,dirs,8,bitsLabel(bits))); } }
+    else { const nm={n:'上',s:'下',w:'左',e:'右'}; for(const d of ['n','s','w','e']) set.appendChild(tileEl(a,b,[d],8,nm[d])); }
+  };
+  btn.addEventListener('click',()=>{
+    if(set.hidden){ if(!built){ fillSet(); built=true; } set.hidden=false; btn.setAttribute('aria-expanded','true'); }
+    else { set.hidden=true; btn.setAttribute('aria-expanded','false'); }
+  });
+  return row;
 }
 export function tileEl(A,B,dirs,bnd,label){
   const w=document.createElement('div'); w.className='tw';

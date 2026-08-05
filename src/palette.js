@@ -19,7 +19,7 @@ export function buildPalette(){
   const h2=document.createElement('h2'); h2.textContent='过渡瓦片 · 完整16片集（Wang 四邻位掩码）';
   p2.appendChild(h2);
   const pairs16=[['~','S'],['~','A'],['G','S'],['G','H'],['G','M'],['~','U'],['G','Q'],['T','V']];
-  const pairs4=[['~','F'],['T','W'],['T','L'],['R','G'],['P','C'],['T','K'],['F','N'],['A','S'],['E','G'],['T','Q'],['W','X'],['T','X'],['P','O'],['P','#'],['S','@'],['G','Z'],['E','Z'],['T','Y']];
+  const pairs4=[['~','F'],['T','W'],['T','L'],['R','G'],['P','C'],['T','K'],['F','N'],['A','S'],['U','A'],['E','G'],['T','Q'],['Q','V'],['V','G'],['W','X'],['T','X'],['X','V'],['P','O'],['O','C'],['P','#'],['#','O'],['S','@'],['@','M'],['G','Z'],['E','Z'],['D','Z'],['T','Y'],['E','Y']];
 	  /* 过渡对默认折叠 + 首次展开时懒渲染：启动只建按钮，过渡 canvas 点击展开才生成。
 	     道路 R 不再参与地形过渡（窄小径叠基底），pairs4 中 R↔G 改为固定草地基底的窄路示意。 */
 	  for(const [a,b] of pairs16) p2.appendChild(makePairRow(a,b,TERRAIN[a].name+' ↔ '+TERRAIN[b].name+' · 16片完整过渡',true));

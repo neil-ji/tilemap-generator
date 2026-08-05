@@ -103,24 +103,99 @@ export function cScorch(x,y,s){ const v=hash2(x,y,s); let r=48,g=44,b=50;
   if(cr>0.985){ r=255; g=152; b=40; }
   else if(cr>0.97){ r=205; g=95; b=32; }
   return clampc(r,g,b); }
+/* 深水：比海洋更暗更蓝的蓝黑 + 微光 */
+export function cDeep(x,y,s){ const v=hash2(x,y,s); let r=16,g=38,b=92;
+  r+=v*8; g+=v*16; b+=v*26;
+  if((y&3)===1){ r+=5; g+=10; b+=14; }
+  if(v>0.95){ r+=16; g+=28; b+=22; }
+  if(hash2(x,y,s+4)>0.985){ r+=12; g+=18; b+=30; }
+  return clampc(r,g,b); }
+/* 深渊裂隙：近黑深谷底 + 极稀疏冷色颗粒（矿物/水汽反光），视觉"无底" */
+export function cChasm(x,y,s){ const v=hash2(x,y,s); let r=12,g=10,b=18;
+  if(v<0.2){ r-=5; g-=4; b-=6; } else if(v>0.85){ r+=6; g+=5; b+=9; }
+  const sp=hash2(x,y,s+5);
+  if(sp>0.955){ r=58; g=72; b=98; }
+  else if(sp>0.93){ r=42; g=46; b=60; }
+  return clampc(r,g,b); }
+/* 泥滩：湿褐 + 反光斑 + 稀疏水洼（浅水-陆地泥泞过渡） */
+export function cMudFlat(x,y,s){ const v=hash2(x,y,s); let r=118,g=92,b=60;
+  r+=v*14; g+=v*12; b+=v*8;
+  if(v<0.2){ r-=20; g-=16; b-=10; } else if(v>0.82){ r+=16; g+=14; b+=10; }
+  if(v>0.93){ r+=34; g+=38; b+=30; }
+  if(hash2(x,y,s+4)>0.97){ r=58; g=86; b=70; }
+  return clampc(r,g,b); }
+/* 洞窟地面：深灰岩面 + 裂缝/碎石，比石板地板更暗带土感 */
+export function cCave(x,y,s){ const v=hash2(x,y,s); let r=96,g=90,b=86;
+  if(v<0.2){ r-=16; g-=15; b-=14; } else if(v>0.8){ r+=12; g+=11; b+=10; }
+  if(hash2(x,y,s+3)>0.97){ r-=18; g-=18; b-=16; }
+  if(hash2(x>>1,y>>1,s+4)>0.92){ r-=10; g-=8; b-=6; }
+  return clampc(r,g,b); }
+/* 木地板：木板横纹 + 板缝/木节/钉 */
+export function cWood(x,y,s){ const v=hash2(x,y,s); let r=172,g=124,b=66;
+  const row=y&7;
+  if(row===0){ r-=40; g-=33; b-=22; }
+  else if(row===1 || row===5){ r-=10; g-=8; b-=6; }
+  else if(row===3 || row===7){ r+=12; g+=9; b+=6; }
+  if(v<0.15){ r-=14; g-=11; b-=8; } else if(v>0.85){ r+=16; g+=13; b+=9; }
+  if(v>0.985){ r=96; g=70; b=44; }
+  return clampc(r,g,b); }
+/* 草原灌木：枯黄草色 + 稀疏深色灌丛簇 */
+export function cShrub(x,y,s){ const v=hash2(x,y,s); let r=120,g=134,b=58;
+  if(v<0.2){ r-=14; g-=16; b-=8; } else if(v>0.82){ r+=20; g+=16; b+=8; }
+  const bush=hash2(x>>1,y>>1,s+2);
+  if(bush>0.86){ r=64; g=88; b=34; }
+  else if(bush>0.72){ r=92; g=108; b=42; }
+  if(hash2(x,y,s+3)>0.97){ r=150; g=140; b=80; }
+  return clampc(r,g,b); }
+/* 高原草甸：高山草地变体，更冷更亮 + 偶见石点/雪斑 */
+export function cAlpine(x,y,s){ const v=hash2(x,y,s); let r=100,g=156,b=94;
+  if(v<0.18){ r-=20; g-=26; b-=14; } else if(v>0.82){ r+=22; g+=18; b+=10; }
+  const patch=hash2(x>>1,y>>1,s+2);
+  if(patch>0.92){ r=238; g=243; b=248; }
+  else if(patch>0.86){ r=150; g=155; b=140; }
+  return clampc(r,g,b); }
+/* 碎石坡：灰褐色大小砾石（高频斑块），比岩石更碎更浅 */
+export function cScree(x,y,s){ const v=hash2(x,y,s); let r=132,g=122,b=100;
+  const peb=hash2(x,y,s+3);
+  if(peb<0.3){ r-=22; g-=20; b-=18; } else if(peb>0.72){ r+=16; g+=14; b+=10; }
+  if(hash2(x>>1,y>>1,s+4)>0.9){ r-=14; g-=12; b-=10; }
+  if(v>0.97){ r+=10; g+=8; b+=6; }
+  return clampc(r,g,b); }
+/* 雪岩：岩石基色 + 随机雪覆斑块（雪线过渡带） */
+export function cSnowRock(x,y,s){ const v=hash2(x,y,s); let r=150,g=152,b=162;
+  if(v<0.2){ r-=26; g-=26; b-=24; } else if(v>0.78){ r+=18; g+=18; b+=14; }
+  const snow=hash2(x>>1,y>>1,s+2);
+  if(snow>0.72){ r=232; g=238; b=244; }
+  else if(snow>0.55){ r=186; g=192; b=200; }
+  if(hash2(x,y,s+7)<0.05 && ((x*3+y*5)&7)<2){ r-=24; g-=24; b-=24; }
+  return clampc(r,g,b); }
 
 export const TERRAIN = {
   '~':{name:'海洋', seed:3, elev:0, color:cOcean},
+  'U':{name:'深水', seed:67, elev:-1, color:cDeep},
+  'Y':{name:'深渊裂隙', seed:61, elev:-2, color:cChasm},
   'A':{name:'浅滩', seed:41, elev:0, color:cShallow},
+  '@':{name:'泥滩', seed:75, elev:0, color:cMudFlat},
   'S':{name:'沙滩', seed:5, elev:1, color:cSand},
   'E':{name:'沙漠', seed:47, elev:1, color:cDesert},
   'M':{name:'沼泽', seed:25, elev:1, color:cSwamp},
   'P':{name:'石板地板', seed:31, elev:1, color:cFloor},
+  'O':{name:'洞窟地面', seed:71, elev:1, color:cCave},
+  '#':{name:'木地板', seed:73, elev:1, color:cWood},
   'D':{name:'泥地', seed:11, elev:2, color:cDirt},
   'G':{name:'草地', seed:7, elev:2, color:cGrass},
   'H':{name:'森林', seed:43, elev:2, color:cForest},
   'R':{name:'道路', seed:13, elev:2, color:cRoad},
   'L':{name:'岩浆', seed:29, elev:2, color:cLava},
+  'Z':{name:'草原灌木', seed:77, elev:2, color:cShrub},
   'F':{name:'冰原', seed:23, elev:3, color:cFrozen},
   'N':{name:'苔原', seed:53, elev:3, color:cTundra},
   'T':{name:'岩石', seed:17, elev:3, color:cStone},
   'K':{name:'焦土', seed:59, elev:3, color:cScorch},
   'C':{name:'岩壁', seed:37, elev:3, color:cWall},
-  'W':{name:'雪地', seed:19, elev:4, color:cSnow}
+  'Q':{name:'高原草甸', seed:63, elev:3, color:cAlpine},
+  'V':{name:'碎石坡', seed:65, elev:3, color:cScree},
+  'W':{name:'雪地', seed:19, elev:4, color:cSnow},
+  'X':{name:'雪岩', seed:69, elev:4, color:cSnowRock}
 };
-export const PALETTE_ORDER=[['~','海洋'],['A','浅滩'],['S','沙滩'],['E','沙漠'],['G','草地'],['H','森林'],['D','泥地'],['M','沼泽'],['R','道路'],['T','岩石'],['C','岩壁'],['F','冰原'],['N','苔原'],['W','雪地'],['L','岩浆'],['K','焦土'],['P','石板地板']];
+export const PALETTE_ORDER=[['U','深水'],['~','海洋'],['A','浅滩'],['@','泥滩'],['S','沙滩'],['E','沙漠'],['Z','草原灌木'],['G','草地'],['H','森林'],['D','泥地'],['M','沼泽'],['R','道路'],['V','碎石坡'],['T','岩石'],['Q','高原草甸'],['C','岩壁'],['F','冰原'],['N','苔原'],['W','雪地'],['X','雪岩'],['L','岩浆'],['K','焦土'],['P','石板地板'],['O','洞窟地面'],['#','木地板'],['Y','深渊裂隙']];

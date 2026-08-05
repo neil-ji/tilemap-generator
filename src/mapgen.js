@@ -32,24 +32,31 @@ export function genWorld(o){
       const wv=wet(moistField[y*w+x]);
       let t;
       if(o.frozenOcean){
-        if(hh<0.18) t='~';
+        if(hh<0.13) t='U';                       /* 深海（冻原极地深水） */
+        else if(hh<0.18) t='~';
         else if(hh<0.405) t='F';
         else if(hh<0.42) t='S';
         else if(hh<0.75) t=(wv>0.9?'T':'N');
-        else if(hh<0.87) t='T';
-        else t='W';
+        else if(hh<0.78) t='T';
+        else if(hh<0.83) t='V';                  /* 山腰碎石坡 */
+        else t='X';                              /* 雪岩峰顶（冻原山最高为雪覆岩石） */
       } else if(o.desert){
-        if(hh<0.16) t='~';
+        if(hh<0.12) t='U';
+        else if(hh<0.16) t='~';
         else if(hh<0.32) t='A';
         else if(hh<0.42) t='S';
-        else if(hh<0.85) t='E';
+        else if(hh<0.82) t='E';
+        else if(hh<0.87) t='V';                  /* 荒漠石质台地：碎石坡 */
         else t='T';
       } else {
-        if(hh<0.33) t='~';
+        if(hh<0.22) t='U';                       /* 深海：海洋景深 */
+        else if(hh<0.33) t='~';
         else if(hh<0.36) t='A';
         else if(hh<0.42) t='S';
-        else if(hh<0.78) t=(wv<-1.0?'D':(wv>0.8?'H':'G'));
-        else if(hh<0.87) t='T';
+        else if(hh<0.78) t=(wv<-1.0?'D':(wv<-0.5?'Z':(wv>0.8?'H':'G')));   /* 旱草地：灌木 Z */
+        else if(hh<0.82) t=(wv>-0.6?'Q':'T');    /* 下高地：湿→高原草甸 Q，干→岩石 */
+        else if(hh<0.87) t='V';                  /* 上高地：碎石坡 */
+        else if(hh<0.92) t='X';                  /* 雪线过渡：雪岩 */
         else t='W';
       }
       row.push(t);
@@ -68,13 +75,36 @@ export function genWorld(o){
   for(const path of (o.roads||[])) for(let i=0;i<path.length-1;i++) stampLine(grid,path[i],path[i+1]);
   /* 桥代码已由 task 2491e3ff 移除，b6be58c2 ChangeIntent 声明此转换循环已失效 */
   if(o.scorch){ for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(grid[y][x]==='T'){ const near=[-1,0,1,0,0,-1,0,1]; let sw=0; for(let k=0;k<8;k+=2){ const ny=y+near[k],nx=x+near[k+1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&grid[ny][nx]==='L') sw=1; } if(sw) grid[y][x]='K'; } } }
+  for(const ch of (o.chasm||[])) carveChasm(grid,ch.pts,w,h,seed);
   if(o.swamp){ const sb=(o.desert?['E']:['G','D']);
     for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(sb.indexOf(grid[y][x])>=0){
       let wc=false;
       for(const d of [[-1,0],[1,0],[0,-1],[0,1]]){ const ny=y+d[0],nx=x+d[1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&(grid[ny][nx]==='~'||grid[ny][nx]==='A')) wc=true; }
       if(wc) grid[y][x]='M';
     } } }
+  /* 泥滩：沙滩/沙漠/沼泽与水体相邻处部分转为湿润反光的泥滩 @ */
+  if(o.mudflat && !o.frozenOcean){ const mf=['S','E','M'];
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(mf.indexOf(grid[y][x])>=0){
+      let wc=false;
+      for(const d of [[-1,0],[1,0],[0,-1],[0,1]]){ const ny=y+d[0],nx=x+d[1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&(grid[ny][nx]==='~'||grid[ny][nx]==='A')) wc=true; }
+      if(wc && hash2(x,y,seed+77)<0.4) grid[y][x]='@';
+    } } }
   return {grid,w,h,seed,river};
+}
+export function carveChasm(grid,pts,w,h,seed){
+  /* 深渊裂隙：沿折线盖章不可通行深坑 Y（2 格宽，方向随机偏），不覆盖水/道路/岩浆 */
+  const put=(x,y)=>{ if(x<0||y<0||x>=w||y>=h) return; const c=grid[y][x]; if(c==='~'||c==='A'||c==='R'||c==='L') return; grid[y][x]='Y'; };
+  for(let i=0;i<pts.length-1;i++){
+    const a=pts[i], b=pts[i+1];
+    const dx=b.x-a.x, dy=b.y-a.y;
+    const n=Math.max(Math.abs(dx),Math.abs(dy));
+    for(let k=0;k<=n;k++){
+      const t=k/n;
+      const tx=Math.round(a.x+dx*t), ty=Math.round(a.y+dy*t);
+      put(tx,ty);
+      if(hash2(tx,ty,seed+91)<0.5) put(tx+1,ty); else put(tx,ty+1);
+    }
+  }
 }
 export function carveRiverPoly(grid,pts,w,h,seed,river){
   const mark=(x,y)=>{ if(x<0||y<0||x>=w||y>=h) return; grid[y][x]='~'; river.add(x+','+y); };
@@ -118,6 +148,13 @@ export function genDungeon(o){
   for(let i=0;i<centers.length-1;i++) carveL(grid,centers[i],centers[i+1]);
   for(let yy=4;yy<=10;yy++) for(let xx=31;xx<=37;xx++){ if((yy-7)*(yy-7)+(xx-34)*(xx-34)<=2.6) grid[yy][xx]='L'; }
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(grid[y][x]==='P' && hash2(x,y,9)<0.04) grid[y][x]='T'; }
+  /* 房间内地形变体：石板 P 部分替换为洞窟地面 O / 木地板 # */
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(grid[y][x]==='P'){ const v=hash2(x,y,(o.seed||1)+51);
+    if(v<0.22) grid[y][x]='O';
+    else if(v<0.30) grid[y][x]='#';
+  } }
+  /* 房间 6 内深坑：3×2 深渊裂隙 */
+  for(let yy=21;yy<=22;yy++) for(let xx=35;xx<=37;xx++) grid[yy][xx]='Y';
   return {grid,w,h,seed:o.seed||1};
 }
 export function carveL(g,a,b){ const x1=a[0],y1=a[1],x2=b[0],y2=b[1];
@@ -126,22 +163,26 @@ export function carveL(g,a,b){ const x1=a[0],y1=a[1],x2=b[0],y2=b[1];
 }
 
 export const MAPS=[
- {id:'main',name:'翡翠大陆',seed:42,w:44,h:30,island:true,swamp:true,
+ {id:'main',name:'翡翠大陆',seed:42,w:44,h:30,island:true,swamp:true,mudflat:true,
   bumps:[{x:14,y:17,r:5,amp:-0.30},{x:28,y:6,r:7,amp:0.55},{x:36,y:13,r:6,amp:0.42},{x:24,y:13,r:5,amp:0.36}],
   rivers:[{pts:[{x:30,y:8},{x:28,y:11},{x:24,y:14},{x:22,y:18},{x:23,y:23},{x:22,y:27}]}],
-  roads:[[{x:20,y:29},{x:20,y:22},{x:20,y:16},{x:27,y:13},{x:34,y:12}]]},
+  roads:[[{x:20,y:29},{x:20,y:22},{x:20,y:16},{x:27,y:13},{x:34,y:12}]],
+  chasm:[{pts:[{x:24,y:8},{x:25,y:9},{x:27,y:9},{x:29,y:9},{x:31,y:8}]}]},
  {id:'tundra',name:'极地冻原',seed:7,w:44,h:30,island:true,frozenOcean:true,
   bumps:[{x:22,y:7,r:8,amp:0.55},{x:30,y:15,r:6,amp:0.4},{x:16,y:13,r:5,amp:0.26},{x:13,y:21,r:5,amp:0.22}],
   rivers:[{pts:[{x:24,y:6},{x:20,y:12},{x:16,y:16},{x:14,y:18},{x:12,y:22},{x:13,y:27}]}],
-  roads:[[{x:13,y:21},{x:16,y:13},{x:22,y:9}]]},
+  roads:[[{x:13,y:21},{x:16,y:13},{x:22,y:9}]],
+  chasm:[{pts:[{x:28,y:14},{x:29,y:15},{x:31,y:15},{x:32,y:14}]}]},
  {id:'volcano',name:'火山群岛',seed:17,w:46,h:28,island:true,scorch:true,
   bumps:[{x:26,y:11,r:7,amp:0.55},{x:9,y:8,r:6,amp:0.38},{x:36,y:17,r:6,amp:0.36},{x:20,y:23,r:6,amp:0.32}],
   lavaCrater:{x:26,y:11,r:7},
   lavaFlow:[{x:26,y:11},{x:27,y:15},{x:28,y:19},{x:29,y:22}],
-  roads:[[{x:14,y:22},{x:18,y:15},{x:23,y:10}]]},
+  roads:[[{x:14,y:22},{x:18,y:15},{x:23,y:10}]],
+  chasm:[{pts:[{x:20,y:11},{x:20,y:12},{x:21,y:13},{x:21,y:15},{x:20,y:16}]}]},
  {id:'dungeon',name:'熔火地牢',w:40,h:28,dungeon:true},
- {id:'desert',name:'流沙荒漠',seed:23,w:46,h:28,desert:true,swamp:true,
+ {id:'desert',name:'流沙荒漠',seed:23,w:46,h:28,desert:true,swamp:true,mudflat:true,
   bumps:[{x:16,y:14,r:7,amp:0.5},{x:32,y:9,r:6,amp:0.38},{x:34,y:19,r:5,amp:0.3},{x:10,y:8,r:5,amp:0.26}],
   lake:{x:23,y:14,r:5},
-  roads:[[{x:10,y:23},{x:19,y:15},{x:32,y:12}]]}
+  roads:[[{x:10,y:23},{x:19,y:15},{x:32,y:12}]],
+  chasm:[{pts:[{x:32,y:18},{x:33,y:19},{x:34,y:20},{x:36,y:21},{x:37,y:20}]}]}
 ];

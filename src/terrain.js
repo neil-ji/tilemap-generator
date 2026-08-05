@@ -120,7 +120,6 @@ export const TERRAIN = {
   'T':{name:'岩石', seed:17, elev:3, color:cStone},
   'K':{name:'焦土', seed:59, elev:3, color:cScorch},
   'C':{name:'岩壁', seed:37, elev:3, color:cWall},
-  'W':{name:'雪地', seed:19, elev:4, color:cSnow},
-  'B':{name:'桥', seed:13, elev:2, color:cRoad}
+  'W':{name:'雪地', seed:19, elev:4, color:cSnow}
 };
 export const PALETTE_ORDER=[['~','海洋'],['A','浅滩'],['S','沙滩'],['E','沙漠'],['G','草地'],['H','森林'],['D','泥地'],['M','沼泽'],['R','道路'],['T','岩石'],['C','岩壁'],['F','冰原'],['N','苔原'],['W','雪地'],['L','岩浆'],['K','焦土'],['P','石板地板']];

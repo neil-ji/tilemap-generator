@@ -62,17 +62,10 @@ export function genWorld(o){
   if(o.lake){ const {x,y,r}=o.lake;
     for(let yy=0;yy<h;yy++)for(let xx=0;xx<w;xx++){ const d=Math.hypot(xx-x,yy-y);
       if(d<r){ grid[yy][xx]='~'; river.add(xx+','+yy); }
-      else if(d<r+1 && grid[yy][xx]!=='~' && grid[yy][xx]!=='B') grid[yy][xx]='A'; } }
+      else if(d<r+1 && grid[yy][xx]!=='~') grid[yy][xx]='A'; } }
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     if(grid[y][x]==='L'){ const near=[-1,0,1,0,0,-1,0,1]; let sw=0; for(let k=0;k<8;k+=2){ const ny=y+near[k],nx=x+near[k+1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&grid[ny][nx]==='~') sw=1; } if(sw) grid[y][x]='T'; } }
-  for(const path of (o.roads||[])) for(let i=0;i<path.length-1;i++) stampLine(grid,path[i],path[i+1],river);
-  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
-    if(grid[y][x]==='R' && river.has(x+','+y)){
-      const n=y>0?grid[y-1][x]:null, s=y<h-1?grid[y+1][x]:null, wc=x>0?grid[y][x-1]:null, ec=x<w-1?grid[y][x+1]:null;
-      const isR=(c)=> c==='R'||c==='B';
-      const roadEW=isR(wc)||isR(ec), roadNS=isR(n)||isR(s);
-      if((roadEW && n==='~'&&s==='~') || (roadNS && wc==='~'&&ec==='~')) grid[y][x]='B';
-    } }
+  for(const path of (o.roads||[])) for(let i=0;i<path.length-1;i++) stampLine(grid,path[i],path[i+1]);
   if(o.scorch){ for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(grid[y][x]==='T'){ const near=[-1,0,1,0,0,-1,0,1]; let sw=0; for(let k=0;k<8;k+=2){ const ny=y+near[k],nx=x+near[k+1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&grid[ny][nx]==='L') sw=1; } if(sw) grid[y][x]='K'; } } }
   if(o.swamp){ const sb=(o.desert?['E']:['G','D']);
     for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(sb.indexOf(grid[y][x])>=0){
@@ -97,10 +90,10 @@ export function carveRiverPoly(grid,pts,w,h,seed,river){
     }
   }
 }
-export function stampLine(grid,a,b,river){
+export function stampLine(grid,a,b){
   const n=Math.max(Math.abs(b.x-a.x),Math.abs(b.y-a.y));
   for(let i=0;i<=n;i++){ const t=i/n; const tx=Math.round(a.x+(b.x-a.x)*t), ty=Math.round(a.y+(b.y-a.y)*t);
-    if(grid[ty]&&grid[ty][tx]!==undefined){ const cur=grid[ty][tx]; if(cur!=='~' || (river&&river.has(tx+','+ty))) grid[ty][tx]='R'; } }
+    if(grid[ty]&&grid[ty][tx]!==undefined){ const cur=grid[ty][tx]; if(cur!=='~') grid[ty][tx]='R'; } }
 }
 export function genDungeon(o){
   const w=o.w,h=o.h; const grid=[];

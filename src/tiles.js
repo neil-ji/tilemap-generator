@@ -175,30 +175,3 @@ export function renderCell(t,nbs,img,cx,cy){
   if(built.flat) return built.flat;
   renderTemplate(built,img,cx,cy); return null;
 }
-/* 木桥瓦片：中间木板桥面 + 上下/左右水面，带桥下阴影与桥栏 */
-export function bridgeTile(axis){
-  const cv=document.createElement('canvas'); cv.width=cv.height=TILE;
-  const ctx=cv.getContext('2d'); const img=ctx.createImageData(TILE,TILE);
-  for(let y=0;y<TILE;y++){ for(let x=0;x<TILE;x++){
-    const inDeck = axis==='h' ? (y>=4&&y<12) : (x>=4&&x<12);
-    let c;
-    if(inDeck){
-      const v=hash2(x,y,21); let r=152,g=104,b=64;
-      const seam = axis==='h' ? (y&3)===0 : (x&3)===0;
-      if(seam){ r-=42; g-=34; b-=26; }
-      if(v<0.15){ r-=16; g-=13; b-=10; } else if(v>0.8){ r+=14; g+=11; b+=6; }
-      const edge = axis==='h' ? (y===4||y===11) : (x===4||x===11);
-      if(edge){ r-=24; g-=19; b-=15; }
-      c=[r,g,b];
-    } else {
-      let cw=TERRAIN['~'].color(x,y,TERRAIN['~'].seed);
-      const shade = axis==='h' ? (y===3||y===12) : (x===3||x===12);
-      if(shade) cw=mix(cw,[8,14,34],0.4);
-      c=cw;
-    }
-    const i=(y*TILE+x)*4; img.data[i]=c[0]; img.data[i+1]=c[1]; img.data[i+2]=c[2]; img.data[i+3]=255;
-  } }
-  ctx.putImageData(img,0,0); return cv;
-}
-const bridgeCache={};
-export const bridgeTileCached=(axis)=> bridgeCache[axis] || (bridgeCache[axis]=bridgeTile(axis));

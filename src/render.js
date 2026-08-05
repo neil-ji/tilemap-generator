@@ -1,20 +1,13 @@
 /* ============ 渲染：地图缓存合成 + 网格/动画/整帧 ============ */
 import { TILE, hash2 } from './util.js';
 import { TERRAIN } from './terrain.js';
-import { renderCell, bridgeTileCached } from './tiles.js';
+import { renderCell } from './tiles.js';
 
-export function bridgeAxis(x,y,grid,w,h){
-  const n=y>0?grid[y-1][x]:null, s=y<h-1?grid[y+1][x]:null, wc=x>0?grid[y][x-1]:null, ec=x<w-1?grid[y][x+1]:null;
-  const isW=(c)=> c==='~';
-  if(isW(n)&&isW(s)) return 'h';
-  if(isW(wc)&&isW(ec)) return 'v';
-  return 'h';
-}
 export function buildMapCache(m){
   const {grid,w,h}=m;
   const cache=document.createElement('canvas'); cache.width=w*TILE; cache.height=h*TILE;
   const ctx=cache.getContext('2d');
-  const nmap=(c)=> c==='B'?'R':c;
+  const nmap=(c)=> c;
   /* 单个 ImageData buffer 复用：逐格覆盖写入，消除每格 createImageData/putImageData 分配 */
   const img=ctx.createImageData(TILE,TILE);
   /* 预生成可动格列表（水/岩浆）与每格的静态哈希，动画只遍历该列表 */
@@ -27,7 +20,6 @@ export function buildMapCache(m){
     const t=grid[y][x], px=x*TILE, py=y*TILE;
     if(t==='~'){ const rv=river.has(x+','+y)?1:0; animCells.push({x,y,ty:'~',rv,k:hash2(x,y,1),kr:rv?hash2(x,y,5):0}); }
     else if(t==='L') animCells.push({x,y,ty:'L',k:hash2(x,y,3)});
-    if(t==='B'){ ctx.drawImage(bridgeTileCached(bridgeAxis(x,y,grid,w,h)),px,py); continue; }
     const nb=nbrs(x,y); /* 与下方海拔阴影/悬崖棱线共用一次邻接计算 */
     const flatTile=renderCell(t,nb,img,x,y);
     if(flatTile) ctx.drawImage(flatTile,px,py); else ctx.putImageData(img,px,py);

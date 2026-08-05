@@ -17,7 +17,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = join(HERE, '..', 'src');
 const { TILE } = await import('../src/util.js');
 const { TERRAIN } = await import('../src/terrain.js');
-const { renderCell, baseOf } = await import('../src/tiles.js');
+const { renderCell, baseOf, renderRoadCell } = await import('../src/tiles.js');
 const { genWorld, genDungeon, MAPS } = await import('../src/mapgen.js');
 
 /* ============ 小工具 ============ */
@@ -234,7 +234,24 @@ await test('T4 道路窄条验证（roadBase 特征检测，依赖道路改造�
       if (coastal && WATER[base]){ problems.push(`${def.id}(${x},${y}): 靠海 R 格 roadBase=${base} 是水体`); }
       else if (coastal) coastalOk++;
       /* 窄路条：R 格像素中「非基底色」占比应在 (0.05, 0.9)——即叠加窄条而非满格替换 */
-      const px = cellPixels('R', nb, x, y);
+      /* 计算 arms：正交 R 邻居方向（与 render.js 一致） */
+      const arms=[];
+      if(y>0&&grid[y-1][x]==='R') arms.push('n');
+      if(y<h-1&&grid[y+1][x]==='R') arms.push('s');
+      if(x>0&&grid[y][x-1]==='R') arms.push('w');
+      if(x<w-1&&grid[y][x+1]==='R') arms.push('e');
+      /* 解析邻居：R→基底（与 render.js res() 一致） */
+      const rnb={};
+      for(const d of ['n','s','w','e','nw','ne','sw','se']){
+        const [dy,dx]={n:[-1,0],s:[1,0],w:[0,-1],e:[0,1],nw:[-1,-1],ne:[-1,1],sw:[1,-1],se:[1,1]}[d];
+        const ny=y+dy, nx=x+dx;
+        if(ny<0||ny>=h||nx<0||nx>=w){ rnb[d]=null; continue; }
+        const nc=grid[ny][nx];
+        rnb[d]=nc==='R'? (roadBase[ny*w+nx]||'G') : nc;
+      }
+      const img=document.createElement('canvas').getContext('2d').createImageData(TILE,TILE);
+      renderRoadCell(base,rnb,arms,img,0,0);
+      const px=img.data;
       const baseBuf = baseOf(base)._buf;
       let diff = 0;
       for (let i = 0; i < px.length; i += 4){

@@ -21,7 +21,7 @@ function startAnim(){ if(!animateEl.checked) return; cancelAnimationFrame(raf); 
 const mapbar=document.getElementById('mapbar'), seedinfo=document.getElementById('seedinfo');
 const zoomEl=document.getElementById('zoom'), gridEl=document.getElementById('grid'), animateEl=document.getElementById('animate'), speedEl=document.getElementById('speed'), zoomvalEl=document.getElementById('zoomval');
 function applyZoom(){ const z=zoomEl.value*1; cv.style.width=(cv.width*z)+'px'; cv.style.height=(cv.height*z)+'px'; zoomvalEl.textContent=z.toFixed(1); }
-function fit(){ if(!cacheCanvas) return; const z=clamp(Math.min((wrap.clientWidth-16)/(cacheCanvas.width),(wrap.clientHeight-16)/(cacheCanvas.height)),0.5,4); zoomEl.value=z.toFixed(1); applyZoom(); }
+function fit(){ if(!cacheCanvas) return; /* 可用高度取 #mapwrap 计算样式 max-height（桌面 calc(100dvh-150px)），避免初始加载时 clientHeight 被 canvas 内容高度拉低；移动端 max-height:none 回退视口高度 */ const mh=parseFloat(getComputedStyle(wrap).maxHeight); const availH=(Number.isFinite(mh)&&mh>0)?mh:(window.innerHeight-150); const z=clamp(Math.min((wrap.clientWidth-16)/(cacheCanvas.width),(availH-16)/(cacheCanvas.height)),0.5,4); zoomEl.value=z.toFixed(1); applyZoom(); }
 function loadMap(def, opts){
   currentDef=def;
   /* 生成期间禁用全部切图按钮 + 「生成中…」反馈；setTimeout(0) 让出主线程先渲染一帧再开始同步生成 */

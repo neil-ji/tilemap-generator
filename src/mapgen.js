@@ -147,35 +147,99 @@ export function stampLine(grid,a,b,roadBase){
     px=tx; py=ty;
   }
 }
+/* ---- 地牢结构辅助：房间填充 / 直线 / L / Z / 斜向通道（全部 4-connected） ---- */
+function fillRect(g,x0,y0,x1,y1,c){ for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++) if(g[y]&&g[y][x]!==undefined) g[y][x]=c; }
+function carveH(g,y,x0,x1){ for(let x=Math.min(x0,x1);x<=Math.max(x0,x1);x++) if(g[y]) g[y][x]='P'; }
+function carveV(g,x,y0,y1){ for(let y=Math.min(y0,y1);y<=Math.max(y0,y1);y++) if(g[y]&&g[y][x]!==undefined) g[y][x]='P'; }
+function carveZ(g,a,b){
+  /* Z 形通道：横→纵→横三段，中间竖段向一侧偏移 → 两端横段落在不同行，呈 Z 形 */
+  const x1=a[0],y1=a[1],x2=b[0],y2=b[1];
+  const midX=x1+(x2>=x1?3:-3);
+  carveH(g,y1,Math.min(x1,midX),Math.max(x1,midX));
+  carveV(g,midX,Math.min(y1,y2),Math.max(y1,y2));
+  carveH(g,y2,Math.min(midX,x2),Math.max(midX,x2));
+}
+function carveDiag(g,a,b){
+  /* 斜向通道：线性插值逐点取整的 4-connected 阶梯，对角跳变处补一个正交格保持连通 */
+  const x1=a[0],y1=a[1],x2=b[0],y2=b[1];
+  const n=Math.max(Math.abs(x2-x1),Math.abs(y2-y1));
+  let px=x1,py=y1;
+  for(let i=0;i<=n;i++){
+    const tx=Math.round(x1+(x2-x1)*(i/n)), ty=Math.round(y1+(y2-y1)*(i/n));
+    if(i>0 && tx!==px && ty!==py && g[py]&&g[py][tx]!==undefined) g[py][tx]='P'; /* 拐角补格 */
+    if(g[ty]&&g[ty][tx]!==undefined) g[ty][tx]='P';
+    px=tx; py=ty;
+  }
+}
 export function genDungeon(o){
-  const w=o.w,h=o.h; const grid=[];
+  const w=o.w,h=o.h; const seed=(o.seed||1)&0xffff;
+  const rnd=(k)=>hash2(seed,k,137);
+  const grid=[];
   for(let y=0;y<h;y++){ const row=[]; for(let x=0;x<w;x++) row.push('C'); grid.push(row); }
-  const rooms=[
-    {x:3,y:3,w:9,h:7},{x:16,y:3,w:12,h:8},{x:31,y:4,w:7,h:6},
-    {x:3,y:15,w:8,h:9},{x:16,y:14,w:14,h:10},{x:33,y:16,w:6,h:8}
-  ];
-  for(const r of rooms) for(let yy=r.y+1;yy<r.y+r.h-1;yy++) for(let xx=r.x+1;xx<r.x+r.w-1;xx++) grid[yy][xx]='P';
-  const centers=rooms.map(r=>[Math.floor(r.x+r.w/2),Math.floor(r.y+r.h/2)]);
-  for(let i=0;i<centers.length-1;i++) carveL(grid,centers[i],centers[i+1]);
-  for(let yy=4;yy<=10;yy++) for(let xx=31;xx<=37;xx++){ if((yy-7)*(yy-7)+(xx-34)*(xx-34)<=2.6) grid[yy][xx]='L'; }
-  for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(grid[y][x]==='P' && hash2(x,y,9)<0.04) grid[y][x]='T'; }
+  const put=(x,y,c)=>{ if(x>=0&&y>=0&&x<w&&y<h) grid[y][x]=c; };
+
+  /* ===== 房间骨架（固定几何，适配 40×28；随机性只用 hash2 驱动细节，同 seed 可复现、任何种子结构完整连通） ===== */
+  /* R1 矩形（起点房） */
+  fillRect(grid,3,3,10,7,'P');
+  /* R2 圆形房间（椭圆，算法生成；rx≈ry 更显圆润） */
+  for(let y=1;y<=9;y++)for(let x=13;x<=23;x++){ if((((x-18)/5)**2+((y-5)/4.5)**2)<=1) put(x,y,'P'); }
+  /* R3 复合房间：主厅 + 东侧耳室，共享墙 x35 开 2 格门口 */
+  fillRect(grid,28,3,34,6,'P');
+  fillRect(grid,36,3,37,6,'P');
+  put(35,4,'P'); put(35,5,'P');
+  /* R4 宝库房间：密集 T 岩石环（四边 2 格厚）+ 中央 3×3 空地，仅东侧留一道门 */
+  fillRect(grid,3,13,9,19,'T');
+  for(let y=14;y<=18;y++)for(let x=4;x<=8;x++){ if((((x-6)/1.6)**2+((y-16)/1.6)**2)<=1) put(x,y,'P'); }
+  /* R5 水池房间：石板地面 + 中央浅水 ~ + 中央深水 U */
+  fillRect(grid,15,13,22,17,'P');
+  for(let y=13;y<=17;y++)for(let x=15;x<=22;x++){ if((((x-18)/2.6)**2+((y-15)/1.6)**2)<=1) put(x,y,'~'); }
+  put(18,15,'U'); put(18,16,'U');
+  /* R6 柱列房间：石板地面 + 2 根 C 岩柱（柱位 hash 微调，避开门口） */
+  fillRect(grid,27,13,33,18,'P');
+  if(rnd(510)<0.5){ put(30,15,'C'); put(32,17,'C'); }
+  else { put(29,16,'C'); put(33,14,'C'); }
+  /* R7/R8/R9 矩形房间 */
+  fillRect(grid,3,23,9,25,'P');    /* R7 南西 */
+  fillRect(grid,16,22,22,25,'P');  /* R8 南中 */
+  fillRect(grid,28,23,35,25,'P');  /* R9 南东 */
+
+  /* ===== 通道：直线 / L / Z / 斜向混合（4-connected 连通全部房间） ===== */
+  carveH(grid,5,6,18);              /* R1→R2 直线 */
+  carveL(grid,[18,5],[31,4]);       /* R2→R3 L 形 */
+  carveZ(grid,[18,5],[18,12]);      /* R2→R5 Z 形 */
+  carveH(grid,13,18,30);            /* R5→R6 直线 */
+  carveL(grid,[6,16],[14,13]);      /* R5→R4 L 形 */
+  carveDiag(grid,[28,18],[31,23]);  /* R6→R9 斜向阶梯 */
+  carveH(grid,23,19,31);            /* R9→R8 直线 */
+  carveH(grid,24,10,15);            /* R7→R8 直线（南带横连，R4 宝库只走东门保持岩环完整） */
+
+  /* ===== 岩浆元素：R5-R6 间隙岩浆池 + Z 竖道东侧岩浆沟 + R9 角上岩浆池 ===== */
+  fillRect(grid,24,14,25,16,'L');
+  fillRect(grid,22,6,22,11,'L');
+  fillRect(grid,34,24,35,25,'L');
+  /* R8 地面深渊裂隙 */
+  put(21,24,'Y'); put(22,24,'Y');
+  /* 碎石坡 V 点缀（房间角落，可走） */
+  put(16,22,'V'); put(22,22,'V');
+  put(28,25,'V'); put(29,25,'V');
+
   /* 房间内地形变体：石板 P 部分替换为洞窟地面 O / 木地板 # */
-  for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(grid[y][x]==='P'){ const v=hash2(x,y,(o.seed||1)+51);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(grid[y][x]==='P'){ const v=hash2(x,y,seed+51);
     if(v<0.22) grid[y][x]='O';
     else if(v<0.30) grid[y][x]='#';
   } }
-  /* 房间 6 内深坑：3×2 深渊裂隙 */
-  for(let yy=21;yy<=22;yy++) for(let xx=35;xx<=37;xx++) grid[yy][xx]='Y';
-  /* Phase 2 高度层：房间/通道微起伏（fbm），岩壁 C 高起、岩浆 L 下陷、裂隙 Y 最深 */
-  const hs=o.seed||1;
+
+  /* Phase 2 高度层：房间/通道微起伏（fbm），岩壁 C 高起、岩浆 L/裂隙 Y/水体下陷 */
   const heights=new Float64Array(w*h);
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     const c=grid[y][x];
     let hh;
     if(c==='Y') hh=0.05;
-    else if(c==='L') hh=0.28;
+    else if(c==='U') hh=0.20;
+    else if(c==='L') hh=0.26;
+    else if(c==='~') hh=0.30;
     else if(c==='C') hh=0.72;
-    else hh=0.56+fbm(x*0.07,y*0.07,hs+5)*0.08;
+    else hh=0.56+fbm(x*0.07,y*0.07,seed+5)*0.08;
     heights[y*w+x]=hh;
   }
   return {grid,w,h,seed:hs,heights,roadBase:new Array(w*h)};

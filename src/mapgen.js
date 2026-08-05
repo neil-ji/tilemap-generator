@@ -65,7 +65,7 @@ export function genWorld(o){
       else if(d<r+1 && grid[yy][xx]!=='~' && grid[yy][xx]!=='B') grid[yy][xx]='A'; } }
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     if(grid[y][x]==='L'){ const near=[-1,0,1,0,0,-1,0,1]; let sw=0; for(let k=0;k<8;k+=2){ const ny=y+near[k],nx=x+near[k+1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&grid[ny][nx]==='~') sw=1; } if(sw) grid[y][x]='T'; } }
-  for(const path of (o.roads||[])) for(let i=0;i<path.length-1;i++) stampLine(grid,path[i],path[i+1],river);
+  for(const path of (o.roads||[])) for(let i=0;i<path.length-1;i++) stampLine(grid,path[i],path[i+1]);
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     if(grid[y][x]==='R' && river.has(x+','+y)){
       const n=y>0?grid[y-1][x]:null, s=y<h-1?grid[y+1][x]:null, wc=x>0?grid[y][x-1]:null, ec=x<w-1?grid[y][x+1]:null;
@@ -97,10 +97,20 @@ export function carveRiverPoly(grid,pts,w,h,seed,river){
     }
   }
 }
-export function stampLine(grid,a,b,river){
+export function stampLine(grid,a,b){
+  /* 4-connected 铺路：线性插值逐点取整，相邻点发生对角跳变时补填一个正交格（优先 px,ty，被水/斜角阻挡则 tx,py），
+     放置前检查不会与已有道路格形成纯对角接触（否则宁可不补，道路在河岸自然终止）；道路不覆盖河流。 */
   const n=Math.max(Math.abs(b.x-a.x),Math.abs(b.y-a.y));
+  const isR=(x,y)=> grid[y]&&grid[y][x]==='R';
+  const diagGap=(x,y)=>{ for(const [dx,dy] of [[1,1],[1,-1],[-1,1],[-1,-1]])
+    if(isR(x+dx,y+dy) && !isR(x+dx,y) && !isR(x,y+dy)) return true; return false; };
+  const put=(x,y)=>{ if(!grid[y]||grid[y][x]===undefined||grid[y][x]==='~'||diagGap(x,y)) return false; grid[y][x]='R'; return true; };
+  let px=0,py=0;
   for(let i=0;i<=n;i++){ const t=i/n; const tx=Math.round(a.x+(b.x-a.x)*t), ty=Math.round(a.y+(b.y-a.y)*t);
-    if(grid[ty]&&grid[ty][tx]!==undefined){ const cur=grid[ty][tx]; if(cur!=='~' || (river&&river.has(tx+','+ty))) grid[ty][tx]='R'; } }
+    if(i>0 && tx!==px && ty!==py && !put(px,ty)) put(tx,py);
+    put(tx,ty);
+    px=tx; py=ty;
+  }
 }
 export function genDungeon(o){
   const w=o.w,h=o.h; const grid=[];

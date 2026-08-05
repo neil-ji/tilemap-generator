@@ -67,6 +67,7 @@ function selectMap(idx,opts){
   [...mapbar.children].forEach((x,i)=>{ x.classList.toggle('active',i===currentMapIdx); x.setAttribute('aria-pressed',i===currentMapIdx?'true':'false'); });
   currentSeed=(opts&&opts.seed!=null)?opts.seed:(m.seed!=null?m.seed:(m.dungeon?1:0));
   loadMap(m,{seed:currentSeed,fit:opts&&opts.fit});
+  savePrefs();
 }
 function applySeedInput(){
   const v=parseInt(seedInput.value,10);
@@ -86,11 +87,12 @@ document.getElementById('btnFit').onclick=fit;
 document.getElementById('btnExportMap').onclick=()=>{ if(!cacheCanvas||!currentMap) return;
   downloadCanvas(exportMapPNG(currentMap, cacheCanvas, {tint:tintEl.checked, contour:contourEl.checked}), 'tilemap-'+(currentDef.id||'map')+'-'+currentMap.seed+'.png'); };
 document.getElementById('btnExportTiles').onclick=()=>{ downloadCanvas(buildTilesetCanvas(), 'tileset-26x'+EXPORT_PAIRS.length+'.png'); };
-zoomEl.oninput=applyZoom;
-gridEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };
-tintEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };
-contourEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };
-animateEl.onchange=()=>{ if(animateEl.checked) startAnim(); else { cancelAnimationFrame(raf); drawFrame(); } };
+zoomEl.oninput=()=>{ applyZoom(); savePrefs(); };
+gridEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); savePrefs(); };
+tintEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); savePrefs(); };
+contourEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); savePrefs(); };
+animateEl.onchange=()=>{ if(animateEl.checked) startAnim(); else { cancelAnimationFrame(raf); drawFrame(); } savePrefs(); };
+speedEl.oninput=savePrefs; /* 速度经动画循环逐帧读取，无需重绘，仅持久化 */
 seedInput.addEventListener('keydown',(e)=>{ if(e.key==='Enter'){ e.preventDefault(); seedInput.blur(); } });
 seedInput.addEventListener('change',applySeedInput);
 /* ============ 键盘快捷键：1-9 切图 / R 换种子 / F 适应窗口 / G 网格 / A 动画 ============ */
@@ -121,15 +123,47 @@ document.addEventListener('keydown',(e)=>{
 });
 window.addEventListener('resize',fit);
 
+/* ============ 设置持久化（localStorage，键名 tilemap. 前缀避免污染） ============ */
+const PREFS_KEY='tilemap.prefs';
+function readPrefs(){
+  try{ const raw=localStorage.getItem(PREFS_KEY); return raw? JSON.parse(raw) : null; }
+  catch(e){ return null; } /* 隐私模式/存储被禁用：静默降级为会话级 */
+}
+function savePrefs(){
+  try{ localStorage.setItem(PREFS_KEY, JSON.stringify({
+    zoom:zoomEl.value*1, animate:animateEl.checked, grid:gridEl.checked,
+    speed:speedEl.value*1, tint:tintEl.checked, contour:contourEl.checked, map:currentMapIdx,
+  })); }catch(e){ /* 静默降级 */ }
+}
+function applyPrefs(p){
+  if(typeof p.zoom==='number') zoomEl.value=p.zoom;
+  if(typeof p.speed==='number') speedEl.value=p.speed;
+  if(typeof p.grid==='boolean') gridEl.checked=p.grid;
+  if(typeof p.tint==='boolean') tintEl.checked=p.tint;
+  if(typeof p.contour==='boolean') contourEl.checked=p.contour;
+  if(typeof p.animate==='boolean') animateEl.checked=p.animate;
+}
+
 /* ============ 启动 ============ */
 buildPalette();
-/* 尊重 prefers-reduced-motion：命中则默认关闭动画，静态帧更省电且对运动敏感用户友好（P1-2/P2-3） */
+/* 1) 恢复持久化设置（localStorage；无存储/损坏则保持 HTML 默认值，与现状一致） */
+const prefs=readPrefs();
+if(prefs) applyPrefs(prefs);
+/* 2) 尊重 prefers-reduced-motion：命中则强制关闭动画（a11y 优先于持久化 animate），静态帧更省电且对运动敏感用户友好（P1-2/P2-3） */
 const mq=window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
 if(mq && mq.matches) animateEl.checked=false;
 if(mq){ const onMq=()=>{ if(mq.matches && animateEl.checked){ animateEl.checked=false; cancelAnimationFrame(raf); drawFrame(); } };
   if(mq.addEventListener) mq.addEventListener('change',onMq); else if(mq.addListener) mq.addListener(onMq); }
+/* 3) 初始地图优先级：URL ?map=N > localStorage.map > 默认 0（分享链接时以链接为准） */
 const qp=new URLSearchParams(location.search);
-const qm=parseInt(qp.get('map')||'0',10);
+const qmRaw=qp.get('map');
+const hasMapParam=qmRaw!==null;
+const qm=hasMapParam? clamp(parseInt(qmRaw,10)||0,0,MAPS.length-1) : 0;
 const qs=parseInt(qp.get('seed'),10);
 const validSeed=Number.isInteger(qs)&&qs>=0&&qs<=65535;
-selectMap(qm,{seed:validSeed?qs:undefined,fit:true});
+const savedMap=(prefs && Number.isInteger(prefs.map))? prefs.map : 0;
+const mapIdx=hasMapParam? qm : clamp(savedMap,0,MAPS.length-1);
+/* 无持久化 zoom 时 fit 适配窗口；有则直接应用保存的缩放 */
+const needsFit=!(prefs && typeof prefs.zoom==='number');
+const seed=validSeed?qs:undefined;
+selectMap(mapIdx,{seed,fit:needsFit});

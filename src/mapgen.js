@@ -72,7 +72,10 @@ export function genWorld(o){
       else if(d<r+1 && grid[yy][xx]!=='~') grid[yy][xx]='A'; } }
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     if(grid[y][x]==='L'){ const near=[-1,0,1,0,0,-1,0,1]; let sw=0; for(let k=0;k<8;k+=2){ const ny=y+near[k],nx=x+near[k+1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&grid[ny][nx]==='~') sw=1; } if(sw) grid[y][x]='T'; } }
-  for(const path of (o.roads||[])) for(let i=0;i<path.length-1;i++) stampLine(grid,path[i],path[i+1]);
+  /* roadBase：盖章前保存每个道路格的原地形（窄小径渲染的基底，不能在渲染时靠邻居推导——
+     实测靠海 R 格会把海洋当基底）。仿 heights 先例，零新增计算成本。 */
+  const roadBase=new Array(w*h);
+  for(const path of (o.roads||[])) for(let i=0;i<path.length-1;i++) stampLine(grid,path[i],path[i+1],roadBase);
   /* 桥代码已由 task 2491e3ff 移除，b6be58c2 ChangeIntent 声明此转换循环已失效 */
   if(o.scorch){ for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(grid[y][x]==='T'){ const near=[-1,0,1,0,0,-1,0,1]; let sw=0; for(let k=0;k<8;k+=2){ const ny=y+near[k],nx=x+near[k+1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&grid[ny][nx]==='L') sw=1; } if(sw) grid[y][x]='K'; } } }
   for(const ch of (o.chasm||[])) carveChasm(grid,ch.pts,w,h,seed);
@@ -91,7 +94,7 @@ export function genWorld(o){
     } } }
   /* Phase 2：返回并行高度层 heights（第一遍已算好的连续海拔场 hhField，零新增计算）。
      高度层只驱动渲染侧浮雕/阴影/等高线，不掺入字符 grid（保持 tiles.js 签名缓存 key 纯净）。 */
-  return {grid,w,h,seed,river,heights:hhField};
+  return {grid,w,h,seed,river,heights:hhField,roadBase};
 }
 export function carveChasm(grid,pts,w,h,seed){
   /* 深渊裂隙：沿折线盖章不可通行深坑 Y（2 格宽，方向随机偏），不覆盖水/道路/岩浆 */
@@ -123,14 +126,20 @@ export function carveRiverPoly(grid,pts,w,h,seed,river){
     }
   }
 }
-export function stampLine(grid,a,b){
+export function stampLine(grid,a,b,roadBase){
   /* 4-connected 铺路：线性插值逐点取整，相邻点发生对角跳变时补填一个正交格（优先 px,ty，被水/斜角阻挡则 tx,py），
-     放置前检查不会与已有道路格形成纯对角接触（否则宁可不补，道路在河岸自然终止）；道路不覆盖河流。 */
+     放置前检查不会与已有道路格形成纯对角接触（否则宁可不补，道路在河岸自然终止）；道路不覆盖河流。
+     roadBase（可选并行数组）：盖章前保存旧地形，供窄小径渲染读基底；已有 R 格不覆盖已存基底（跨路交点保留首次）。 */
   const n=Math.max(Math.abs(b.x-a.x),Math.abs(b.y-a.y));
+  const gw=grid[0].length;
   const isR=(x,y)=> grid[y]&&grid[y][x]==='R';
   const diagGap=(x,y)=>{ for(const [dx,dy] of [[1,1],[1,-1],[-1,1],[-1,-1]])
     if(isR(x+dx,y+dy) && !isR(x+dx,y) && !isR(x,y+dy)) return true; return false; };
-  const put=(x,y)=>{ if(!grid[y]||grid[y][x]===undefined||grid[y][x]==='~'||diagGap(x,y)) return false; grid[y][x]='R'; return true; };
+  const put=(x,y)=>{ if(!grid[y]||grid[y][x]===undefined||grid[y][x]==='~'||diagGap(x,y)) return false;
+    const old=grid[y][x];
+    grid[y][x]='R';
+    if(old!=='R'&&roadBase) roadBase[y*gw+x]=old;
+    return true; };
   let px=0,py=0;
   for(let i=0;i<=n;i++){ const t=i/n; const tx=Math.round(a.x+(b.x-a.x)*t), ty=Math.round(a.y+(b.y-a.y)*t);
     if(i>0 && tx!==px && ty!==py && !put(px,ty)) put(tx,py);
@@ -169,7 +178,7 @@ export function genDungeon(o){
     else hh=0.56+fbm(x*0.07,y*0.07,hs+5)*0.08;
     heights[y*w+x]=hh;
   }
-  return {grid,w,h,seed:hs,heights};
+  return {grid,w,h,seed:hs,heights,roadBase:new Array(w*h)};
 }
 export function carveL(g,a,b){ const x1=a[0],y1=a[1],x2=b[0],y2=b[1];
   for(let x=Math.min(x1,x2);x<=Math.max(x1,x2);x++) if(g[y1]) g[y1][x]='P';

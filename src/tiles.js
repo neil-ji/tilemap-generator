@@ -1,6 +1,6 @@
 /* ============ 瓦片生成（含过渡） ============ */
 import { TILE, clamp, smooth, hash2, mix, wob } from './util.js';
-import { TERRAIN } from './terrain.js';
+import { TERRAIN, roadColor } from './terrain.js';
 
 /* 像素风过渡：seam 用世界坐标 Bayer 4×4 有序抖动（过渡带内逐像素在 A/主导邻居间按阈值选择，纯色块无平滑渐变）。
    世界坐标阈值保证相邻两格在共享缝线上逐像素一致、无缝隙，且抖动结构化无盐椒散点；图鉴 blob 模式沿用 2×2 Bayer。 */
@@ -107,9 +107,73 @@ export function cellTile(t,nbs,cx,cy){
   renderTilePixels(t,dirNeighbors,'seam',img,cx,cy);
   ctx.putImageData(img,0,0); return cv;
 }
-const baseOf = (t)=> baseOf.cache[t] || (baseOf.cache[t]=tileCanvas(t,t,[]));
+const baseOf = (t)=> baseOf.cache[t] || (baseOf.cache[t]= (t==='R'? roadTileDefault() : tileCanvas(t,t,[])));
 baseOf.cache={};
 export { baseOf };
+
+/* ---- 窄小径叠加（Option A）：R 格 = 基底瓦片渲染 + 6px 窄路条 ----
+   道路不再作为满格地形：grid 仍存 R（统计/盖章语义不变），渲染时先按基底地形走现有过渡，
+   再按正交 R 邻居方向构造过格心(8,8)的骨架折线，用「到折线距离场」画恒定带宽窄条（无 wob 锯齿），
+   d<=w/2 路心色 / d<=w/2+1 深色描边 / 其余保留基底。R 格依赖 roadBase（超出「地形+8邻」签名），
+   不走模板缓存（占图 ~1.5%，逐格直算可接受），其余地形缓存机制不动。 */
+const ROAD_W=6;            /* 心带宽（px）：16px 格内 38%，直线/L/T/十字实测清晰，甜点值 */
+const ROAD_HALF=ROAD_W/2;
+const ROAD_OUT=1;          /* 1px 深色描边：低对比基底（沙漠/碎石）上路径「弹出来」的关键 */
+const ROAD_EM={ n:[8,0], s:[8,15], w:[0,8], e:[15,8] };  /* 正交 R 邻居方向的格边中点 */
+function roadSegments(arms){
+  /* 由正交 R 邻居方向构造骨架线段集（过格心折线）：端点=短臂收圆帽、对向=直段、相邻=L、3/4 臂=T/十字 */
+  if(!arms.length) return null;   /* 孤立道路格：退化为格心点（圆帽小点） */
+  const segs=[];
+  if(arms.length===1){ const m=ROAD_EM[arms[0]]; segs.push([m[0],m[1],8,8]); }
+  else if(arms.length===2){
+    const a=arms[0], b=arms[1];
+    if((a==='n'&&b==='s')||(a==='s'&&b==='n')) segs.push([8,0,8,15]);
+    else if((a==='w'&&b==='e')||(a==='e'&&b==='w')) segs.push([0,8,15,8]);
+    else { const m=ROAD_EM[a]; segs.push([m[0],m[1],8,8]); const n=ROAD_EM[b]; segs.push([8,8,n[0],n[1]]); }
+  } else { for(const d of arms){ const m=ROAD_EM[d]; segs.push([8,8,m[0],m[1]]); } }
+  return segs;
+}
+function segDist(px,py,x1,y1,x2,y2){
+  const dx=x2-x1, dy=y2-y1, len2=dx*dx+dy*dy;
+  if(len2===0) return Math.hypot(px-x1,py-y1);
+  let t=((px-x1)*dx+(py-y1)*dy)/len2;
+  t=t<0?0:t>1?1:t;
+  return Math.hypot(px-(x1+dx*t), py-(y1+dy*t));
+}
+function distToSegments(segs,px,py){
+  let m=Infinity;
+  for(let i=0;i<segs.length;i++){ const d=segDist(px,py,segs[i][0],segs[i][1],segs[i][2],segs[i][3]); if(d<m) m=d; }
+  return m;
+}
+function overlayRoad(img,arms,ox,oy){
+  const segs=roadSegments(arms);
+  const data=img.data, seed=TERRAIN['R'].seed;
+  for(let y=0;y<TILE;y++){ for(let x=0;x<TILE;x++){
+    const d=segs? distToSegments(segs,x,y) : Math.hypot(x-8,y-8);
+    if(d<=ROAD_HALF+ROAD_OUT){
+      const j=(y*TILE+x)*4;
+      const rc=roadColor([data[j],data[j+1],data[j+2]], ox+x, oy+y, seed);
+      let c;
+      if(d<=ROAD_HALF) c=rc;
+      else c=[rc[0]*0.6|0, rc[1]*0.6|0, rc[2]*0.6|0];   /* 描边：路心压暗 ~40% */
+      data[j]=c[0]; data[j+1]=c[1]; data[j+2]=c[2]; data[j+3]=255;
+    }
+  } }
+}
+/* R 格渲染主入口：先把基底瓦片渲染进 img（force 确保 flat 也写入 buffer），再叠加窄路条。
+   nb 已是「R→基底 解析后」的邻居（render.js 侧解析）。 */
+export function renderRoadCell(base,nb,arms,img,cx,cy){
+  renderCell(base,nb,img,cx,cy,true);
+  overlayRoad(img,arms,(cx||0)*TILE,(cy||0)*TILE);
+}
+/* 无 roadBase 上下文（图鉴/统计图标）的默认道路瓦片：固定草地基底 + 水平窄路条示意 */
+const ROAD_FALLBACK_BASE='G';
+function roadTileDefault(){
+  const cv=document.createElement('canvas'); cv.width=cv.height=TILE;
+  const ctx=cv.getContext('2d'); const img=ctx.createImageData(TILE,TILE);
+  renderRoadCell(ROAD_FALLBACK_BASE,{},['w','e'],img,0,0);
+  ctx.putImageData(img,0,0); return cv;
+}
 
 /* ---- 邻居签名缓存（P1-1 后半）：同一「地形+8邻接」配置的格子共享一次昂贵的逐像素过渡计算 ----
    seam 抖动阈值依赖格的世界坐标 Bayer 4×4（保证相邻格共享缝线逐像素对齐、无盐椒散点），
@@ -183,13 +247,18 @@ function renderTemplate(tpl,img,cx,cy){
       i++;
     } }
 }
-/* 主入口：返回 flat 瓦片 canvas（调用方直接 blit）或 null（像素已写入 img，调用方 putImageData） */
-export function renderCell(t,nbs,img,cx,cy){
+/* 主入口：返回 flat 瓦片 canvas（调用方直接 blit）或 null（像素已写入 img，调用方 putImageData）。
+   force=true 时即使 flat 也把像素写入 img（供 R 格基底渲染叠加窄路条），非 R 地形不带 force，行为逐字节不变。 */
+function blitFlatToImg(flatCv,img){
+  const t=document.createElement('canvas'); t.width=t.height=TILE;
+  const tc=t.getContext('2d'); tc.drawImage(flatCv,0,0);
+  img.data.set(tc.getImageData(0,0,TILE,TILE).data);
+}
+export function renderCell(t,nbs,img,cx,cy,force){
   const key=neighborKey(t,nbs);
-  const tpl=templateCache.get(key);
-  if(tpl){ if(tpl.flat) return tpl.flat; renderTemplate(tpl,img,cx,cy); return null; }
-  const built=buildTemplate(t,nbs);
-  templateCache.set(key,built);
-  if(built.flat) return built.flat;
-  renderTemplate(built,img,cx,cy); return null;
+  let tpl=templateCache.get(key);
+  if(!tpl){ tpl=buildTemplate(t,nbs); templateCache.set(key,tpl); }
+  if(tpl.flat){ if(force) blitFlatToImg(tpl.flat,img); else return tpl.flat; }
+  else renderTemplate(tpl,img,cx,cy);
+  return null;
 }

@@ -89,7 +89,9 @@ export function genWorld(o){
       for(const d of [[-1,0],[1,0],[0,-1],[0,1]]){ const ny=y+d[0],nx=x+d[1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&(grid[ny][nx]==='~'||grid[ny][nx]==='A')) wc=true; }
       if(wc && hash2(x,y,seed+77)<0.4) grid[y][x]='@';
     } } }
-  return {grid,w,h,seed,river};
+  /* Phase 2：返回并行高度层 heights（第一遍已算好的连续海拔场 hhField，零新增计算）。
+     高度层只驱动渲染侧浮雕/阴影/等高线，不掺入字符 grid（保持 tiles.js 签名缓存 key 纯净）。 */
+  return {grid,w,h,seed,river,heights:hhField};
 }
 export function carveChasm(grid,pts,w,h,seed){
   /* 深渊裂隙：沿折线盖章不可通行深坑 Y（2 格宽，方向随机偏），不覆盖水/道路/岩浆 */
@@ -155,7 +157,19 @@ export function genDungeon(o){
   } }
   /* 房间 6 内深坑：3×2 深渊裂隙 */
   for(let yy=21;yy<=22;yy++) for(let xx=35;xx<=37;xx++) grid[yy][xx]='Y';
-  return {grid,w,h,seed:o.seed||1};
+  /* Phase 2 高度层：房间/通道微起伏（fbm），岩壁 C 高起、岩浆 L 下陷、裂隙 Y 最深 */
+  const hs=o.seed||1;
+  const heights=new Float64Array(w*h);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const c=grid[y][x];
+    let hh;
+    if(c==='Y') hh=0.05;
+    else if(c==='L') hh=0.28;
+    else if(c==='C') hh=0.72;
+    else hh=0.56+fbm(x*0.07,y*0.07,hs+5)*0.08;
+    heights[y*w+x]=hh;
+  }
+  return {grid,w,h,seed:hs,heights};
 }
 export function carveL(g,a,b){ const x1=a[0],y1=a[1],x2=b[0],y2=b[1];
   for(let x=Math.min(x1,x2);x<=Math.max(x1,x2);x++) if(g[y1]) g[y1][x]='P';

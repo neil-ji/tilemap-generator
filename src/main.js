@@ -13,13 +13,13 @@ let cacheCanvas=null, currentMap=null, currentDef=null, raf=null;
 
 /* ============ 渲染循环 ============ */
 function drawFrame(now){
-  renderFrame(cv.getContext('2d'), cacheCanvas, currentMap, {anim:animateEl.checked, grid:gridEl.checked, speed:speedEl.value*1}, now);
+  renderFrame(cv.getContext('2d'), cacheCanvas, currentMap, {anim:animateEl.checked, grid:gridEl.checked, speed:speedEl.value*1, tint:tintEl.checked, contour:contourEl.checked}, now);
 }
 function startAnim(){ if(!animateEl.checked) return; cancelAnimationFrame(raf); const loop=(t)=>{ drawFrame(t); raf=requestAnimationFrame(loop); }; raf=requestAnimationFrame(loop); }
 
 /* ============ 控件 ============ */
 const mapbar=document.getElementById('mapbar'), seedinfo=document.getElementById('seedinfo');
-const zoomEl=document.getElementById('zoom'), gridEl=document.getElementById('grid'), animateEl=document.getElementById('animate'), speedEl=document.getElementById('speed'), zoomvalEl=document.getElementById('zoomval');
+const zoomEl=document.getElementById('zoom'), gridEl=document.getElementById('grid'), tintEl=document.getElementById('tint'), contourEl=document.getElementById('contour'), animateEl=document.getElementById('animate'), speedEl=document.getElementById('speed'), zoomvalEl=document.getElementById('zoomval');
 function applyZoom(){ const z=zoomEl.value*1; cv.style.width=(cv.width*z)+'px'; cv.style.height=(cv.height*z)+'px'; zoomvalEl.textContent=z.toFixed(1); }
 function fit(){ if(!cacheCanvas) return; /* 可用高度取 #mapwrap 计算样式 max-height（桌面 calc(100dvh-150px)），避免初始加载时 clientHeight 被 canvas 内容高度拉低；移动端 max-height:none 回退视口高度 */ const mh=parseFloat(getComputedStyle(wrap).maxHeight); const availH=(Number.isFinite(mh)&&mh>0)?mh:(window.innerHeight-150); const z=clamp(Math.min((wrap.clientWidth-16)/(cacheCanvas.width),(availH-16)/(cacheCanvas.height)),0.5,4); zoomEl.value=z.toFixed(1); applyZoom(); }
 function loadMap(def, opts){
@@ -56,6 +56,8 @@ document.getElementById('btnReroll').onclick=()=>{ currentDef.seed=(currentDef.s
 document.getElementById('btnFit').onclick=fit;
 zoomEl.oninput=applyZoom;
 gridEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };
+tintEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };
+contourEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); };
 animateEl.onchange=()=>{ if(animateEl.checked) startAnim(); else { cancelAnimationFrame(raf); drawFrame(); } };
 window.addEventListener('resize',fit);
 

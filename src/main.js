@@ -5,9 +5,9 @@ import { TERRAIN } from './terrain.js';
 import { baseOf } from './tiles.js';
 import { genWorld, genDungeon, MAPS } from './mapgen.js';
 import { buildMapCache, drawFrame as renderFrame } from './render.js';
-import { buildMapCache25D, drawFrame25D, composeFrame25D } from './view25d.js';
+import { buildMapCache25D, drawFrame25D } from './view25d.js';
 import { buildPalette } from './palette.js';
-import { downloadCanvas, exportMapPNG, buildTilesetCanvas, EXPORT_PAIRS } from './export.js';
+import { downloadCanvas, exportMapPNG, exportMapPNG25D, buildTilesetCanvas, EXPORT_PAIRS } from './export.js';
 
 const cv=document.getElementById('cv');
 const wrap=document.getElementById('mapwrap');
@@ -16,7 +16,7 @@ let cacheCanvas=null, cache25D=null, currentMap=null, currentDef=null, raf=null,
 /* ============ 渲染循环（2D / 2.5D 模式分支） ============ */
 function drawFrame(now){
   if(view25dEl.checked && cache25D)
-    drawFrame25D(cv.getContext('2d'), cache25D, currentMap, {anim:animateEl.checked, grid:gridEl.checked, tint:tintEl.checked, contour:contourEl.checked, speed:speedEl.value*1}, now);
+    drawFrame25D(cv.getContext('2d'), cache25D, currentMap, {grid:gridEl.checked}, now);
   else
     renderFrame(cv.getContext('2d'), cacheCanvas, currentMap, {anim:animateEl.checked, grid:gridEl.checked, speed:speedEl.value*1, tint:tintEl.checked, contour:contourEl.checked}, now);
 }
@@ -88,9 +88,10 @@ const sp=document.createElement('div'); sp.className='panel'; const sp2=document
 document.getElementById('palette').appendChild(sp);
 document.getElementById('btnReroll').onclick=()=>{ currentSeed=Math.floor(Math.random()*65536); loadMap(currentDef,{seed:currentSeed}); };
 document.getElementById('btnFit').onclick=fit;
-/* 导出：地图 PNG 复用 cacheCanvas（含过渡/高度差覆盖层），叠加海拔着色/等高线当前状态；瓦片集按当前地图定名 */
+/* 导出：地图 PNG 复用 cacheCanvas（含过渡/高度差覆盖层），叠加海拔着色/等高线当前状态；
+   2.5D 模式走 exportMapPNG25D（等距静态帧快照，文件名 tilemap-<id>-<seed>-25d.png）；瓦片集按当前地图定名 */
 document.getElementById('btnExportMap').onclick=()=>{ if(!cacheCanvas||!currentMap) return;
-  if(view25dEl.checked && cache25D) downloadCanvas(composeFrame25D(cache25D, {tint:tintEl.checked, contour:contourEl.checked}), 'tilemap-25d-'+(currentDef.id||'map')+'-'+currentMap.seed+'.png');
+  if(view25dEl.checked && cache25D){ const ex=exportMapPNG25D(cache25D,currentDef.id,currentMap.seed); downloadCanvas(ex.canvas,ex.filename); }
   else downloadCanvas(exportMapPNG(currentMap, cacheCanvas, {tint:tintEl.checked, contour:contourEl.checked}), 'tilemap-'+(currentDef.id||'map')+'-'+currentMap.seed+'.png'); };
 document.getElementById('btnExportTiles').onclick=()=>{ downloadCanvas(buildTilesetCanvas(), 'tileset-26x'+EXPORT_PAIRS.length+'.png'); };
 zoomEl.oninput=()=>{ applyZoom(); savePrefs(); };

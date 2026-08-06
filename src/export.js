@@ -2,6 +2,8 @@
    「导出地图 PNG」复用 buildMapCache 的 cacheCanvas（已含过渡瓦片 + 高度差覆盖层），
    再把海拔着色/等高线 overlay canvas 按当前开关状态 drawImage 合成到目标 canvas，
    渲染核心零改动；网格线、水/岩浆动画属于 UI 动态覆盖层，不导出。
+   「导出地图 PNG（2.5D）」复用 buildMapCache25D 的静态等距帧快照（顶面 + 抬升 + 侧壁），
+   同样不含网格/动画——与 2D 一致，网格属 UI 动态覆盖层；文件名为 tilemap-<mapId>-<seed>-25d.png。
    「导出瓦片集」遍历 PALETTE_ORDER 基础瓦片 + 代表过渡对（2×2 块）绘制为带标注图集，
    供外部复用；块布局 = A 基色｜A←上B｜A←左B｜B 基色。 */
 import { TILE } from './util.js';
@@ -57,6 +59,17 @@ export function exportMapPNG(map, cacheCanvas, ui){
   if(ui.tint && cacheCanvas.tintCanvas) ctx.drawImage(cacheCanvas.tintCanvas,0,0);
   if(ui.contour && cacheCanvas.contourCanvas) ctx.drawImage(cacheCanvas.contourCanvas,0,0);
   return cv;
+}
+
+/* 地图 PNG（2.5D）：导出 buildMapCache25D 的静态等距帧（顶面 + 抬升 + 侧壁）快照。
+   返回 { canvas, filename }：canvas 为该帧像素拷贝（与页面所见一致，但剔除网格——网格属 UI
+   动态覆盖层，与 2D 导出同理），filename = tilemap-<mapId>-<seed>-25d.png。 */
+export function exportMapPNG25D(cache25D, mapId, seed){
+  const cv = document.createElement('canvas'); cv.width = cache25D.width; cv.height = cache25D.height;
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(cache25D, 0, 0);
+  return { canvas: cv, filename: 'tilemap-' + (mapId || 'map') + '-' + seed + '-25d.png' };
 }
 
 /* 瓦片集 sprite sheet：26 基础瓦片（PALETTE_ORDER 顺序，2 行）+ 代表过渡对 2×2 块 */

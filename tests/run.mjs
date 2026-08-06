@@ -6,8 +6,11 @@
      T3  5 张地图生成 smoke：grid 尺寸 / 无未定义地形 / 地形统计和 = w×h
      T4  道路窄条验证（roadBase 特征检测；依赖道路改造合入，未合入则 SKIP）
      T5  高度层数据：heights 尺寸 w×h、范围 [0,1]
+     T6  2.5D 渲染 smoke：buildMapCache25D 渲染 2-3 张高差图不抛错、尺寸符合等距计算、内容合理
+     T7  2D buildMapCache 逐字节不变护栏：黄金哈希（gen-golden.mjs 生成）+ 2.5D 路径运行前后一致
    退出码：有 FAIL 时 1，否则 0。 */
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -19,6 +22,8 @@ const { TILE } = await import('../src/util.js');
 const { TERRAIN } = await import('../src/terrain.js');
 const { renderCell, baseOf, renderRoadCell } = await import('../src/tiles.js');
 const { genWorld, genDungeon, MAPS } = await import('../src/mapgen.js');
+const { buildMapCache } = await import('../src/render.js');
+const { buildMapCache25D, STEP, Z_STEPS } = await import('../src/view25d.js');
 
 /* ============ 小工具 ============ */
 const neighbors = (grid, w, h, x, y) => {
@@ -288,6 +293,82 @@ await test('T5 高度层数据（heights 尺寸 w×h、范围 [0,1]）', () => {
   }
   if (problems.length) return fail(problems.join('；'));
   return ok(`${passed}/${MAPS.length} 张地图 heights 均为 w×h 尺寸且全部落在 [0,1]`);
+});
+
+/* ============ T6 2.5D 渲染 smoke（Phase D） ============ */
+/* buildMapCache25D 渲染 2-3 张高差图不抛错；输出尺寸符合等距计算
+     (w+h)·16S+1 × (w+h-2)·8S+16S+maxZ·STEP·S+1（S=res，maxZ 由 heights 量化复算）；
+   内容合理性：不透明像素占比落在 (5%, 95%)——既有菱形顶面+侧壁填充，又不至于全满/空白。 */
+await test('T6 2.5D 渲染 smoke（buildMapCache25D 高差图尺寸/内容）', () => {
+  const cases = [
+    { id: 'plateau', res: 1 },
+    { id: 'doom', res: 1 },
+    { id: 'frozen', res: 2 },   /* res=2 超采样路径 */
+  ];
+  const problems = [];
+  let passed = 0;
+  for (const c of cases){
+    const def = MAPS.find((d) => d.id === c.id);
+    if (!def){ problems.push(`T6: 未知地图 ${c.id}`); continue; }
+    const m = genWorld(def);
+    const cc = buildMapCache(m);
+    const iso = buildMapCache25D(m, cc, { res: c.res });
+    const S = c.res, w = m.w, h = m.h;
+    const eW = (w + h) * 16 * S + 1;
+    let maxZ = 0;
+    for (let i = 0; i < w * h; i++){ const z = Math.min(Z_STEPS - 1, Math.max(0, Math.floor(m.heights[i] * Z_STEPS))); if (z > maxZ) maxZ = z; }
+    const eH = (w + h - 2) * 8 * S + 16 * S + maxZ * STEP * S + 1;
+    if (iso.width !== eW || iso.height !== eH) problems.push(`${c.id}: 尺寸 ${iso.width}×${iso.height} != 等距计算 ${eW}×${eH}（S=${S}, maxZ=${maxZ}）`);
+    if (!iso.meta || iso.meta.maxZ !== maxZ) problems.push(`${c.id}: meta.maxZ=${iso.meta && iso.meta.maxZ} != 期望 ${maxZ}`);
+    const buf = iso._buf;
+    if (buf.length !== iso.width * iso.height * 4) problems.push(`${c.id}: 缓冲长度 ${buf.length} != ${iso.width}×${iso.height}×4`);
+    let opaque = 0;
+    for (let i = 3; i < buf.length; i += 4) if (buf[i] === 255) opaque++;
+    const frac = opaque / (iso.width * iso.height);
+    if (!(frac > 0.05 && frac < 0.95)) problems.push(`${c.id}: 不透明像素占比 ${(frac * 100).toFixed(1)}% 异常（应 ∈ (5%,95%)，非空白/非全满）`);
+    else passed++;
+  }
+  if (problems.length) return fail(problems.join('；'));
+  return ok(`${passed}/${cases.length} 张高差图 2.5D 渲染不抛错，尺寸符合等距计算，内容合理`);
+});
+
+/* ============ T7 2D buildMapCache 逐字节不变护栏（Phase D） ============ */
+/* 显式对比 2D buildMapCache 与黄金哈希（gen-golden.mjs 生成的 cache.json）：
+   主缓存 + 海拔着色/等高线覆盖层三缓冲逐一比 SHA-256（全缓冲 hex 每图 ~3.6MB 不实用，
+   SHA-256 任一字节改动即漂移，等价字节级护栏）。
+   模式切换断言：2.5D 路径（buildMapCache25D res=1 与 res=2）先跑一遍，若其污染共享状态
+   （hash2/模板缓存等），重建的 2D cache 哈希将漂移 → after != before。 */
+await test('T7 2D buildMapCache 逐字节不变护栏（黄金哈希 + 2.5D 路径前后一致）', () => {
+  const goldenPath = join(HERE, 'golden', 'cache.json');
+  if (!fs.existsSync(goldenPath)) return fail(`缺少黄金基线 ${goldenPath}——请先运行 node tests/gen-golden.mjs`);
+  const golden = JSON.parse(fs.readFileSync(goldenPath, 'utf8')).caches;
+  const sha = (canvas) => createHash('sha256').update(Buffer.from(canvas._buf.buffer, canvas._buf.byteOffset, canvas._buf.length)).digest('hex');
+  const snap = (cc) => ({
+    main: sha(cc),
+    tint: cc.tintCanvas ? sha(cc.tintCanvas) : null,
+    contour: cc.contourCanvas ? sha(cc.contourCanvas) : null,
+  });
+  const eq = (a, b) => a.main === b.main && a.tint === b.tint && a.contour === b.contour;
+  const problems = [];
+  let passed = 0;
+  for (const [key, want] of Object.entries(golden)){
+    const sep = key.lastIndexOf('-');
+    const id = key.slice(0, sep), seed = parseInt(key.slice(sep + 1), 10);
+    const def = MAPS.find((d) => d.id === id);
+    if (!def){ problems.push(`golden 含未知地图 ${id}`); continue; }
+    const m = genWorld({ ...def, seed });
+    const before = snap(buildMapCache(m));
+    if (!eq(before, want)){ problems.push(`${key}: 2D cache 哈希与黄金不一致（2D 渲染被改？有意改动请 node tests/gen-golden.mjs 重新生成）`); continue; }
+    /* 模式切换：2.5D 路径跑一遍（含 res=2 超采样），断言 2D 输出无漂移 */
+    const cc2 = buildMapCache(m);
+    buildMapCache25D(m, cc2, { res: 1 });
+    buildMapCache25D(m, cc2, { res: 2 });
+    const after = snap(buildMapCache(m));
+    if (!eq(after, before)) problems.push(`${key}: 2.5D 路径运行后 2D cache 哈希漂移（共享状态污染）`);
+    else passed++;
+  }
+  if (problems.length) return fail(problems.join('；'));
+  return ok(`${passed}/${Object.keys(golden).length} 张地图 buildMapCache 哈希与黄金一致，2.5D 路径运行前后无漂移`);
 });
 
 /* ============ 输出 ============ */

@@ -7,9 +7,11 @@
      Phase B 鲁棒性：侧壁底边精确止于邻格（南 y+1 / 东 x+1）顶面顶边（几何恒等式），后画
      （更大 depth = 更近相机）的格用顶面盖住前格侧壁底边 → 极端高度差（深渊裂隙 Y ↔ 高原）
      无穿插、无漏缝；同 depth 格沿对角相接不重叠，桶内按 z 升序确定性绘制。
-   Phase B 侧壁视觉：按地形材质分类切面色（岩类 T/C/K/V 灰棕切面+层理、雪 W/X 偏白、沙漠 E/S 偏黄、
-     土壤/草地土色切面）+ 层理横线（每 4-6px 一道，厚壁才明显）+ hash2 碎屑 + 顶缘受光亮线（呼应 2D 唇边）
-     + 高度差越大侧壁越深（悬崖更醒目）。只读 mapgen/heights/terrain/tiles，不写签名缓存；2D 路径完全不动。
+   Phase B+P1 侧壁视觉：四段式地质剖面（顶帽=顶面地形色垂下 → 岩层=周期横线+每壁相位 → 碎石=岩类
+     底部碎屑 → 底部 AO 加深）+ 方向光照（南壁受光、东壁 ×0.86）+ 高度差越大壁越深。LIP 阈值：
+     dz==1 缓坡只画干净顶帽/唇边（消除波纹），dz≥2 崖壁才画完整四段式。顶缘亮线/壁基 AO 放最终 pass
+     （全部格画完后叠画，避免被子格顶面覆盖）。P0 数据修正：水/岩浆/裂隙 LOW 区按邻域地面 z−1 压低位，
+     不再浮空。只读 mapgen/heights/terrain/tiles，不写签名缓存；2D 路径完全不动。
    Phase C：每帧在静态帧上增量绘制——水/岩浆动画（animCells 粒子按世界→等距仿射投影成顶面
      平行四边形，图案与 render.js drawAnim 一致）、海拔着色/等高线 overlay（懒构建投影图层，开关零重建）、
      菱形网格线。绘制序与 2D drawFrame 对齐：静态 → tint → contour → anim → grid。
@@ -23,24 +25,25 @@ export const STEP = 3;      /* 每高度层垂直抬升像素（屏幕 Y） */
 export const Z_STEPS = 8;   /* 高度量化层数（heights 0..1 → 0..Z_STEPS-1） */
 const ROCKY = { T:1, C:1, K:1, V:1, X:1 };   /* 与 render.js 同：岩类（侧壁层理强化） */
 
-/* 侧壁材质切面参数（Phase B）：blend=基色向切面色混入比、dark=基准亮度（壁顶）、
-   bedding=层理间距 px（0=无，dz≥2 厚壁才启用）、beddingA=层理线暗化、debris=岩屑密度、cast=切面色。
+/* 侧壁材质切面参数（Phase B + P1）：blend=基色向切面色混入比、dark=基准亮度（壁顶）、
+   cap=顶帽厚度 px（顶面地形色垂下，dz≥2 厚壁才启用分带）、capCol=顶帽色、bedding=层理间距 px、
+   beddingA=层理线暗化、debris=底部碎石密度、cast=切面色。
    风格与 2D drawCliff 基色压暗+层理一致（render.js:35-52），按地形材质分类不跳色。 */
 const WALL_MAT = {
-  rock:     { blend:0.62, dark:0.52, bedding:6, beddingA:0.24, debris:0.10, cast:[124,118,132] },
-  snowrock: { blend:0.55, dark:0.60, bedding:6, beddingA:0.16, debris:0.08, cast:[196,202,216] },
-  snow:     { blend:0.45, dark:0.68, bedding:0, beddingA:0.12, debris:0.05, cast:[238,244,252] },
-  desert:   { blend:0.50, dark:0.56, bedding:8, beddingA:0.16, debris:0.06, cast:[206,178,128] },
-  earth:    { blend:0.65, dark:0.50, bedding:0, beddingA:0.14, debris:0.05, cast:[108,78,48] },
-  stone:    { blend:0.55, dark:0.50, bedding:6, beddingA:0.18, debris:0.08, cast:[118,120,130] },
-  lava:     { blend:0.45, dark:0.46, bedding:0, beddingA:0.18, debris:0.06, cast:[150,60,30] },
-  water:    { blend:0.40, dark:0.46, bedding:0, beddingA:0.10, debris:0.03, cast:[44,74,124] },
+  rock:     { blend:0.62, dark:0.52, cap:1, capCol:[128,122,136], bedding:4, beddingA:0.24, debris:0.18, cast:[124,118,132] },
+  snowrock: { blend:0.55, dark:0.60, cap:2, capCol:[200,206,220], bedding:4, beddingA:0.14, debris:0.10, cast:[196,202,216] },
+  snow:     { blend:0.45, dark:0.66, cap:3, capCol:[240,246,252], bedding:5, beddingA:0.10, debris:0.08, cast:[238,244,252] },
+  desert:   { blend:0.50, dark:0.56, cap:2, capCol:[224,196,150], bedding:6, beddingA:0.12, debris:0.14, cast:[206,178,128] },
+  earth:    { blend:0.72, dark:0.50, cap:3, capCol:[104,72,48],   bedding:5, beddingA:0.10, debris:0.10, cast:[108,78,48] },
+  stone:    { blend:0.55, dark:0.50, cap:1, capCol:[124,126,136], bedding:4, beddingA:0.18, debris:0.14, cast:[118,120,130] },
+  lava:     { blend:0.45, dark:0.46, cap:2, capCol:[180,84,40],   bedding:4, beddingA:0.16, debris:0.12, cast:[150,60,30] },
+  water:    { blend:0.40, dark:0.46, cap:1, capCol:[50,80,130],   bedding:0, beddingA:0.10, debris:0.03, cast:[44,74,124] },
 };
 /* 地形 → 侧壁材质（岩切面灰棕、雪地偏白、沙漠偏黄、土壤/草地土色、建材石板；R 经 effT 解析为基底） */
 function wallMaterial(ch){
   if (ch === 'W') return 'snow';
   if (ch === 'X') return 'snowrock';
-  if (ch === 'T' || ch === 'C' || ch === 'K' || ch === 'V') return 'rock';
+  if (ROCKY[ch]) return 'rock';            /* T/C/K/V（X 已在上分支解析为雪岩）：正式启用 ROCKY */
   if (ch === 'E' || ch === 'S' || ch === '@') return 'desert';
   if (ch === 'P' || ch === 'O' || ch === '#') return 'stone';
   if (ch === 'L') return 'lava';
@@ -88,15 +91,24 @@ function effT(m, x, y){
   return (m.roadBase && m.roadBase[y * m.w + x]) || 'G';
 }
 
-/* 侧壁填充：平行四边形，顶边 = 菱形可见边（南 L→B / 东 R→B），垂直落差 Δ = 层差·STEP。
+/* 侧壁填充 v2（P1 四段式地质剖面）：平行四边形，顶边 = 菱形可见边（南 L→B / 东 R→B），垂直落差 Δ = 层差·STEP。
    世界坐标入参（px=X、py=Y），写出时加 offX/offY。列循环：每列顶边 yTop = Y0+16S-|px-X0|·0.5。
-   Phase B：材质切面色（岩/雪/沙/土分类）+ 层理横线 + 碎屑 + 顶缘受光亮线 + 高度差越深越暗。
+   四段式：① 顶帽（顶部 capPx 用顶面地形色垂下，草/雪/沙延伸下壁）→ ② 岩层（周期 bedding 一道横线
+   + 每壁相位 hash2，避免呆板等距）→ ③ 底部碎石（岩类密度大，talus）→ ④ 底部 AO（壁底加深，扎根）。
+   方向光照：南壁受光、东壁 ×0.86（光从西北来）。LIP 阈值：dz==1 缓坡只画干净顶帽/唇边（薄壁干净），
+   dz≥2 崖壁才画完整四段式（厚壁有结构）。顶缘亮线/壁基 AO 由最终 pass（rimAO）在整幅帧画完后叠画，
+   避免被子格顶面覆盖（painter 先画壁后画顶面、低格 depth 更大后画）。
    d = 距壁顶像素距离：d<1 行被本格顶面覆盖（顶面后画），可见顶缘从 d≈1 起。 */
-function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb){
+function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb, face){
   const base = baseColor(ch);
   const mat = WALL_MAT[wallMaterial(ch)] || WALL_MAT.earth;
-  const col = mix(base, mat.cast, mat.blend);               /* 材质切面色（浮点） */
-  const heightDark = Math.min(0.12, (dz - 1) * 0.020);      /* 差 1 层最亮，差多层（悬崖）越深 */
+  const col = mix(base, mat.cast, mat.blend);               /* 壁体切面色（浮点） */
+  const thick = dz >= 2;                                     /* LIP：薄壁干净、厚壁有结构 */
+  const heightDark = Math.min(0.14, (dz - 1) * 0.022);      /* 差 1 层最亮，差多层（悬崖）越深 */
+  const capPx = (mat.cap || 1) * S;                          /* 顶帽厚度（res 像素） */
+  const period = Math.max(1, mat.bedding * S);               /* 层理周期（res 像素） */
+  const phase = hash2(X0, Y0, 211) * period;                 /* 每壁层理相位，避免呆板等距 */
+  const screeTop = 1 - Math.min(4 * S, Δ) / Δ;               /* 底部碎石区上界 */
   const cxa = Math.max(0, Math.ceil(offX + xa)), cxb = Math.min(outW - 1, Math.floor(offX + xb));
   for (let cx = cxa; cx <= cxb; cx++){
     const px = cx - offX;                                    /* 世界 X */
@@ -105,23 +117,55 @@ function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb){
     const cy0 = Math.max(0, Math.ceil(offY + yTop)), cy1 = Math.min(outH - 1, Math.floor(offY + yBot));
     for (let cy = cy0; cy <= cy1; cy++){
       const d = cy - offY - yTop;                            /* 距壁顶像素距离 */
-      const fromTop = d / Δ;                                 /* 0..1：0=壁顶 1=壁底 */
-      let k = mat.dark - fromTop * 0.11 - heightDark;        /* 上亮下暗 + 悬崖越深越暗 */
-      /* 层理：沿壁高每 bedding px 一道淡暗横线（平行壁顶缘），厚壁（dz≥2）才明显 */
-      if (mat.bedding && dz >= 2 && (Math.round(d) % mat.bedding) === 0) k *= (1 - mat.beddingA);
-      k *= 0.94 + hash2(px, cy - offY, 151) * 0.12;          /* 每像素碎屑噪声 */
-      if (hash2(px, cy - offY, 203) < mat.debris) k *= 0.80; /* 稀疏深色岩屑 */
-      /* 顶缘受光亮线：d<1 行被顶面覆盖，d∈[1,3) 为可见壁顶缘，加法提亮成受光亮带（呼应 2D 唇边） */
-      if (d < 3){
-        const t = 1 - d / 3;
-        k = k * (1 + 0.5 * t) + 0.18 * t;
+      const fromTop = Δ > 0 ? d / Δ : 1;                     /* 0..1：0=壁顶 1=壁底 */
+      let colv = col;
+      let k = mat.dark - fromTop * 0.13 - heightDark;        /* 上亮下暗 + 悬崖越深越暗 */
+      if (face === 'east') k *= 0.86;                        /* 方向光照：东壁背光（光从左/北来） */
+      if (d < capPx){                                        /* ① 顶帽：顶面地形色垂下 */
+        colv = mix(base, mat.capCol, 0.35);
+        k = mat.dark + 0.06 - fromTop * 0.06;                /* 帽内弱渐变，比壁体亮 */
+      } else if (thick && mat.bedding){                      /* ② 岩层：周期横线 + 相位 + 带界深线 */
+        const q = d + phase;
+        const band = Math.floor(q / period);
+        k *= (band & 1) ? 1.05 : 0.95;                       /* 带间明暗交替（离散色阶） */
+        if (q - band * period < S) k *= (1 - mat.beddingA);  /* 带界 1px 深线 */
       }
+      if (thick && fromTop > screeTop && hash2(px, cy - offY, 151) < mat.debris)
+        k *= 0.72 + hash2(px, cy - offY, 71) * 0.55;         /* ③ 底部碎石（talus，密度按材质） */
+      if (thick && fromTop > 1 - 2 * S / Δ) k *= 0.74;       /* ④ 底部 AO（未覆盖处，最终 pass 补边缘） */
+      if (hash2(px, cy - offY, 91) < 0.16) k *= 0.94 + hash2(px, cy - offY, 73) * 0.12;  /* 稀疏微噪声 */
       const i = (cy * outW + cx) * 4;
-      data[i]   = Math.min(255, Math.max(0, col[0] * k));
-      data[i+1] = Math.min(255, Math.max(0, col[1] * k));
-      data[i+2] = Math.min(255, Math.max(0, col[2] * k));
+      data[i]   = Math.min(255, Math.max(0, colv[0] * k));
+      data[i+1] = Math.min(255, Math.max(0, colv[1] * k));
+      data[i+2] = Math.min(255, Math.max(0, colv[2] * k));
       data[i+3] = 255;
     }
+  }
+}
+
+/* P1 最终 pass：顶缘亮线 + 壁基 AO。painter 先画壁后画顶面、低格 depth 更大后画 → 壁顶/壁底 1px 会被
+   格子顶面覆盖（dz≤2 时壁顶行整段被低格顶面盖住），Rim/AO 若画在壁内必被重画掉。全部格放置完后，
+   对每条存在的壁沿顶缘描 1px 受光亮线（顶面基色提亮，呼应 2D 唇边）、沿底缘描 1px 接触阴影（AO，
+   落差越大越深）。dz==1 缓坡只描唇边、不描 AO——薄壁干净。几何沿用 yTop = Y0+16S-|px-X0|·0.5 同一基准。 */
+function blendPixel(data, outW, outH, cx, cy, r, g, b, a){
+  if (cx < 0 || cy < 0 || cx >= outW || cy >= outH || a <= 0) return;
+  const i = (cy * outW + cx) * 4;
+  data[i] = data[i] * (1 - a) + r * a;
+  data[i+1] = data[i+1] * (1 - a) + g * a;
+  data[i+2] = data[i+2] * (1 - a) + b * a;
+}
+function rimAO(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb){
+  const base = baseColor(ch);
+  const rim = [Math.min(255, base[0] + 42), Math.min(255, base[1] + 34), Math.min(255, base[2] + 24)];
+  const rimA = dz >= 2 ? 0.8 : 0.4;                          /* 崖壁缘 crisp、缓坡唇边 subtle（呼应 2D drawLip 0.35） */
+  const aoA = Math.min(0.5, 0.28 + (dz - 1) * 0.05);         /* 壁基 AO：落差越大越深（Roll20 越低越暗） */
+  const cxa = Math.max(0, Math.ceil(offX + xa)), cxb = Math.min(outW - 1, Math.floor(offX + xb));
+  for (let cx = cxa; cx <= cxb; cx++){
+    const px = cx - offX;
+    const yTop = Y0 + 16 * S - Math.abs(px - X0) * 0.5;
+    blendPixel(data, outW, outH, cx, Math.round(offY + yTop), rim[0], rim[1], rim[2], rimA);
+    if (dz >= 2)
+      blendPixel(data, outW, outH, cx, Math.round(offY + yTop + Δ), 0, 0, 0, aoA);
   }
 }
 
@@ -139,6 +183,43 @@ export function buildMapCache25D(m, cacheCanvas, opts){
     const hh = heights ? heights[y * w + x] : 0;
     const z = Math.min(Z_STEPS - 1, Math.max(0, Math.floor(hh * Z_STEPS)));
     zs[y * w + x] = z; if (z > maxZ) maxZ = z;
+  }
+  /* P0 低位修正：mapgen 的河流/湖泊/岩浆/裂隙盖章（carveRiverPoly/lake/lavaCrater/carveChasm）只改 grid
+     不改 heights，2.5D 高度量化会把它们按原始 hhField 抬成漂浮平台。渲染侧修正（只动 zs 局部，不回写
+     mapgen/heights）：每个连通 LOW 区（~ 海洋/U 深水/A 浅滩/L 岩浆/Y 深渊裂隙）压到「邻域地面 z 最小 − 1」——
+     河道/熔岩/裂谷成低洼、贴地不再浮空；开阔纯海（无地面边界）保持自然低值；水格读作"地面挖下去的低洼"。
+     只降低不升高（水域永不被抬）；区域内水面/熔岩面/裂谷底统一水平，不浮心。 */
+  const LOW = { '~':1, 'U':1, 'A':1, 'L':1, 'Y':1 };
+  const N8 = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]];
+  const regionId = new Int16Array(w * h).fill(-1);
+  const regionMinLand = [];
+  const flood = [];
+  let regionCnt = 0;
+  for (let i = 0; i < w * h; i++){
+    const x = i % w, y = (i / w) | 0;
+    if (!LOW[grid[y][x]] || regionId[i] >= 0) continue;
+    regionId[i] = regionCnt; flood.push(i);
+    let minLand = 0x3fff;                        /* 该区边界地面 z 最小值（0x3fff = 无地面边界） */
+    while (flood.length){
+      const j = flood.pop();
+      const jx = j % w, jy = (j / w) | 0;
+      for (const [dy, dx] of N8){
+        const ny = jy + dy, nx = jx + dx;
+        if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
+        const nj = ny * w + nx;
+        if (LOW[grid[ny][nx]]){ if (regionId[nj] < 0){ regionId[nj] = regionCnt; flood.push(nj); } }
+        else if (zs[nj] < minLand) minLand = zs[nj];
+      }
+    }
+    regionMinLand.push(minLand);
+    regionCnt++;
+  }
+  for (let i = 0; i < w * h; i++){
+    const r = regionId[i];
+    if (r >= 0 && regionMinLand[r] !== 0x3fff){
+      const t = Math.max(0, regionMinLand[r] - 1);
+      if (t < zs[i]) zs[i] = t;
+    }
   }
   /* 画布（res 单位）：世界 X∈[-h·16S, w·16S]，Y∈[-maxZ·STEP·S, (w+h-2)·8S+16S] */
   const offX = h * 16 * S, offY = maxZ * STEP * S;
@@ -192,8 +273,8 @@ export function buildMapCache25D(m, cacheCanvas, opts){
       const ch = effT(m, x, y);
       const dzS = (y + 1 < h) ? z - zs[idx + w] : 0;
       const dzE = (x + 1 < w) ? z - zs[idx + 1] : 0;
-      if (dzS > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0);
-      if (dzE > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S);
+      if (dzS > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0, 'south');
+      if (dzE > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S, 'east');
       /* 顶面：菱形区域采样（最近邻） */
       const gx0 = x * cellPx, gy0 = y * cellPx;
       const cxBase = offX + X0 - DW / 2, cyBase = offY + Y0;
@@ -207,6 +288,17 @@ export function buildMapCache25D(m, cacheCanvas, opts){
         data[di] = srcData[si]; data[di+1] = srcData[si+1]; data[di+2] = srcData[si+2]; data[di+3] = 255;
       }
     }
+  }
+  /* P1 最终 pass：顶缘亮线 + 壁基 AO（全部格放置后叠画，避免被子格顶面覆盖；dz==1 只描唇边不描 AO） */
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){
+    const idx = y * w + x;
+    const z = zs[idx];
+    const X0 = (x - y) * 16 * S, Y0 = (x + y) * 8 * S - z * STEP * S;
+    const ch = effT(m, x, y);
+    const dzS = (y + 1 < h) ? z - zs[idx + w] : 0;
+    const dzE = (x + 1 < w) ? z - zs[idx + 1] : 0;
+    if (dzS > 0) rimAO(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0);
+    if (dzE > 0) rimAO(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S);
   }
   octx.putImageData(img, 0, 0);
   out.meta = { offX, offY, res: S, maxZ, zs, w, h };

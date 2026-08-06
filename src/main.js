@@ -5,24 +5,28 @@ import { TERRAIN } from './terrain.js';
 import { baseOf } from './tiles.js';
 import { genWorld, genDungeon, MAPS } from './mapgen.js';
 import { buildMapCache, drawFrame as renderFrame } from './render.js';
+import { buildMapCache25D, drawFrame25D } from './view25d.js';
 import { buildPalette } from './palette.js';
 import { downloadCanvas, exportMapPNG, buildTilesetCanvas, EXPORT_PAIRS } from './export.js';
 
 const cv=document.getElementById('cv');
 const wrap=document.getElementById('mapwrap');
-let cacheCanvas=null, currentMap=null, currentDef=null, raf=null, currentSeed=0, currentMapIdx=0;
+let cacheCanvas=null, cache25D=null, currentMap=null, currentDef=null, raf=null, currentSeed=0, currentMapIdx=0;
 
-/* ============ 渲染循环 ============ */
+/* ============ 渲染循环（2D / 2.5D 模式分支） ============ */
 function drawFrame(now){
-  renderFrame(cv.getContext('2d'), cacheCanvas, currentMap, {anim:animateEl.checked, grid:gridEl.checked, speed:speedEl.value*1, tint:tintEl.checked, contour:contourEl.checked}, now);
+  if(view25dEl.checked && cache25D)
+    drawFrame25D(cv.getContext('2d'), cache25D, currentMap, {grid:gridEl.checked}, now);
+  else
+    renderFrame(cv.getContext('2d'), cacheCanvas, currentMap, {anim:animateEl.checked, grid:gridEl.checked, speed:speedEl.value*1, tint:tintEl.checked, contour:contourEl.checked}, now);
 }
 function startAnim(){ if(!animateEl.checked) return; cancelAnimationFrame(raf); const loop=(t)=>{ drawFrame(t); raf=requestAnimationFrame(loop); }; raf=requestAnimationFrame(loop); }
 
 /* ============ 控件 ============ */
 const mapbar=document.getElementById('mapbar'), seedinfo=document.getElementById('seedinfo'), seedInput=document.getElementById('seedInput');
-const zoomEl=document.getElementById('zoom'), gridEl=document.getElementById('grid'), tintEl=document.getElementById('tint'), contourEl=document.getElementById('contour'), animateEl=document.getElementById('animate'), speedEl=document.getElementById('speed'), zoomvalEl=document.getElementById('zoomval');
+const zoomEl=document.getElementById('zoom'), gridEl=document.getElementById('grid'), tintEl=document.getElementById('tint'), contourEl=document.getElementById('contour'), animateEl=document.getElementById('animate'), speedEl=document.getElementById('speed'), zoomvalEl=document.getElementById('zoomval'), view25dEl=document.getElementById('view25d'), isoResEl=document.getElementById('isoRes');
 function applyZoom(){ const z=zoomEl.value*1; cv.style.width=(cv.width*z)+'px'; cv.style.height=(cv.height*z)+'px'; zoomvalEl.textContent=z.toFixed(1); }
-function fit(){ if(!cacheCanvas) return; /* 可用高度取 #mapwrap 计算样式 max-height（桌面 calc(100dvh-150px)），避免初始加载时 clientHeight 被 canvas 内容高度拉低；移动端 max-height:none 回退视口高度 */ const mh=parseFloat(getComputedStyle(wrap).maxHeight); const availH=(Number.isFinite(mh)&&mh>0)?mh:(window.innerHeight-150); const z=clamp(Math.min((wrap.clientWidth-16)/(cacheCanvas.width),(availH-16)/(cacheCanvas.height)),0.5,4); zoomEl.value=z.toFixed(1); applyZoom(); }
+function fit(){ if(!cacheCanvas) return; /* 可用高度取 #mapwrap 计算样式 max-height（桌面 calc(100dvh-150px)），避免初始加载时 clientHeight 被 canvas 内容高度拉低；移动端 max-height:none 回退视口高度 */ const mh=parseFloat(getComputedStyle(wrap).maxHeight); const availH=(Number.isFinite(mh)&&mh>0)?mh:(window.innerHeight-150); const z=clamp(Math.min((wrap.clientWidth-16)/(cv.width),(availH-16)/(cv.height)),0.5,4); zoomEl.value=z.toFixed(1); applyZoom(); }
 function loadMap(def, opts){
   currentDef=def;
   /* 生成期间禁用全部切图按钮 + 「生成中…」反馈；setTimeout(0) 让出主线程先渲染一帧再开始同步生成 */
@@ -36,7 +40,8 @@ function loadMap(def, opts){
     currentSeed=data.seed;                 /* 以实际生效种子为准（genDungeon 对 seed 0 映射为 1） */
     currentMapIdx=MAPS.indexOf(currentDef);
     cacheCanvas=buildMapCache(data);
-    cv.width=data.w*TILE; cv.height=data.h*TILE;
+    if(view25dEl.checked){ cache25D=buildMapCache25D(data,cacheCanvas,{res:isoResEl.checked?2:1}); cv.width=cache25D.width; cv.height=cache25D.height; }
+    else { cache25D=null; cv.width=data.w*TILE; cv.height=data.h*TILE; }
     if(opts && opts.fit) fit(); else applyZoom();
     updateStats();
     seedInput.value=String(currentSeed);
@@ -85,12 +90,15 @@ document.getElementById('btnReroll').onclick=()=>{ currentSeed=Math.floor(Math.r
 document.getElementById('btnFit').onclick=fit;
 /* 导出：地图 PNG 复用 cacheCanvas（含过渡/高度差覆盖层），叠加海拔着色/等高线当前状态；瓦片集按当前地图定名 */
 document.getElementById('btnExportMap').onclick=()=>{ if(!cacheCanvas||!currentMap) return;
-  downloadCanvas(exportMapPNG(currentMap, cacheCanvas, {tint:tintEl.checked, contour:contourEl.checked}), 'tilemap-'+(currentDef.id||'map')+'-'+currentMap.seed+'.png'); };
+  if(view25dEl.checked && cache25D) downloadCanvas(cache25D, 'tilemap-25d-'+(currentDef.id||'map')+'-'+currentMap.seed+'.png');
+  else downloadCanvas(exportMapPNG(currentMap, cacheCanvas, {tint:tintEl.checked, contour:contourEl.checked}), 'tilemap-'+(currentDef.id||'map')+'-'+currentMap.seed+'.png'); };
 document.getElementById('btnExportTiles').onclick=()=>{ downloadCanvas(buildTilesetCanvas(), 'tileset-26x'+EXPORT_PAIRS.length+'.png'); };
 zoomEl.oninput=()=>{ applyZoom(); savePrefs(); };
 gridEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); savePrefs(); };
 tintEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); savePrefs(); };
 contourEl.onchange=()=>{ if(animateEl.checked) startAnim(); else drawFrame(); savePrefs(); };
+view25dEl.onchange=()=>{ if(currentDef) loadMap(currentDef,{seed:currentSeed}); savePrefs(); };
+isoResEl.onchange=()=>{ if(view25dEl.checked && currentDef) loadMap(currentDef,{seed:currentSeed}); savePrefs(); };
 animateEl.onchange=()=>{ if(animateEl.checked) startAnim(); else { cancelAnimationFrame(raf); drawFrame(); } savePrefs(); };
 speedEl.oninput=savePrefs; /* 速度经动画循环逐帧读取，无需重绘，仅持久化 */
 seedInput.addEventListener('keydown',(e)=>{ if(e.key==='Enter'){ e.preventDefault(); seedInput.blur(); } });
@@ -133,6 +141,7 @@ function savePrefs(){
   try{ localStorage.setItem(PREFS_KEY, JSON.stringify({
     zoom:zoomEl.value*1, animate:animateEl.checked, grid:gridEl.checked,
     speed:speedEl.value*1, tint:tintEl.checked, contour:contourEl.checked, map:currentMapIdx,
+    view25d:view25dEl.checked, isoRes:isoResEl.checked,
   })); }catch(e){ /* 静默降级 */ }
 }
 function applyPrefs(p){
@@ -142,6 +151,8 @@ function applyPrefs(p){
   if(typeof p.tint==='boolean') tintEl.checked=p.tint;
   if(typeof p.contour==='boolean') contourEl.checked=p.contour;
   if(typeof p.animate==='boolean') animateEl.checked=p.animate;
+  if(typeof p.view25d==='boolean') view25dEl.checked=p.view25d;
+  if(typeof p.isoRes==='boolean') isoResEl.checked=p.isoRes;
 }
 
 /* ============ 启动 ============ */

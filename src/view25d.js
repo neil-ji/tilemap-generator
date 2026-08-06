@@ -1,4 +1,4 @@
-/* ============ 2.5D 等距视图（Phase A 原型） ============
+/* ============ 2.5D 等距视图（Phase A 原型 + Phase C 动画/覆盖层） ============
    等距 2:1 菱形投影：顶面 = 现有 cacheCanvas（2D buildMapCache 产物，已含过渡/道路/特效）按
      菱形区域做仿射逆映射最近邻采样（等价旋转 45° + 纵压 0.5），顶面零改动复用 2D 纹理成果。
    高度层叠：heights（Float64Array 0..1）量化到 Z_STEPS 层，顶面沿屏幕 Y 抬升 z·STEP；
@@ -6,7 +6,10 @@
    painter：按 depth = x+y 升序逐格绘制（侧壁先、顶面后），本原型地图高度差下无部分序冲突。
    只读 mapgen/heights/terrain/tiles，不写签名缓存；2D 路径完全不动（本模块不被 2D 模式调用）。
    res>1：顶面从 2× 最近邻放大 cacheCanvas 采样（菱形 64×32），用于对比 16px 清晰度（关键验证点）。
-   侧壁色：TERRAIN 基色压暗 + 每像素 hash 碎屑 + 上下亮度渐变（上亮下暗）。 */
+   侧壁色：TERRAIN 基色压暗 + 每像素 hash 碎屑 + 上下亮度渐变（上亮下暗）。
+   Phase C：每帧在静态帧上增量绘制——水/岩浆动画（animCells 粒子按世界→等距仿射投影成顶面
+     平行四边形，图案与 render.js drawAnim 一致）、海拔着色/等高线 overlay（懒构建投影图层，开关零重建）、
+     菱形网格线。绘制序与 2D drawFrame 对齐：静态 → tint → contour → anim → grid。 */
 import { TILE, hash2 } from './util.js';
 import { TERRAIN } from './terrain.js';
 
@@ -154,16 +157,130 @@ export function buildMapCache25D(m, cacheCanvas, opts){
   }
   octx.putImageData(img, 0, 0);
   out.meta = { offX, offY, res: S, maxZ, zs, w, h };
+  /* Phase C 依赖：可动格（水/岩浆，render.js 预生成）与 2D overlay 源（海拔着色/等高线）。
+     动画深度序预排序（depth=x+y，与静态帧 painter 同序），每帧直接按序画，无需重排。 */
+  out.animCells = cacheCanvas.animCells || [];
+  const aOrd = out.animCells.map((_, i) => i);
+  aOrd.sort((a, b) => (out.animCells[a].x + out.animCells[a].y) - (out.animCells[b].x + out.animCells[b].y));
+  out.animOrder = aOrd;
+  out._srcTint = cacheCanvas.tintCanvas || null;
+  out._srcContour = cacheCanvas.contourCanvas || null;
   return out;
 }
 
-/* 每帧：blit 静态等距帧 + 可选菱形网格（动画/覆盖层 Phase C 接入，原型不做） */
+/* 每帧：blit 静态等距帧 + 海拔着色/等高线 overlay + 水/岩浆动画 + 菱形网格。
+   Phase C：overlay 与动画均按顶面投影增量绘制，静态帧缓存零重建。
+   绘制序与 2D drawFrame 对齐（静态 → tint → contour → anim → grid）。 */
 export function drawFrame25D(ctx, cache25D, map, ui, now){
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   ctx.drawImage(cache25D, 0, 0);
+  if (ui.tint && cache25D._srcTint) drawIsoOverlay(ctx, cache25D, cache25D._srcTint, 'tintCanvas');
+  if (ui.contour && cache25D._srcContour) drawIsoOverlay(ctx, cache25D, cache25D._srcContour, 'contourCanvas');
+  if (ui.anim && cache25D.animCells && cache25D.animCells.length)
+    drawIsoAnim(ctx, cache25D, now || performance.now(), (typeof ui.speed === 'number') ? ui.speed : 1);
   if (ui.grid) drawIsoGrid(ctx, cache25D);
 }
+
+/* Phase C：把 2D overlay（tintCanvas/contourCanvas，w·16 × h·16）按等距投影重采样为全尺寸图层。
+   与静态帧同 painter（depth=x+y 升序）：深格后写覆盖浅格，图层内遮挡关系与静态帧一致。
+   懒构建（首次需要时），开关切换零重建；S>1 时按最近邻从基分辨率 overlay 采样。 */
+function buildIsoOverlay(cache25D, srcOverlay){
+  const meta = cache25D.meta, S = meta.res, { offX, offY, zs, w, h } = meta;
+  const outW = cache25D.width, outH = cache25D.height;
+  const cv = document.createElement('canvas'); cv.width = outW; cv.height = outH;
+  const octx = cv.getContext('2d');
+  const img = octx.createImageData(outW, outH);
+  const data = img.data;
+  const sw2 = srcOverlay.width, sh2 = srcOverlay.height;
+  const src = srcOverlay.getContext('2d').getImageData(0, 0, sw2, sh2).data;
+  const table = diamondTable(S);
+  const DW = ISO_W * S;
+  const order = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) order.push(y * w + x);
+  order.sort((a, b) => ((a % w) + ((a / w) | 0)) - ((b % w) + ((b / w) | 0)));
+  for (const idx of order){
+    const x = idx % w, y = (idx / w) | 0;
+    const z = zs[idx];
+    const X0 = (x - y) * 16 * S, Y0 = (x + y) * 8 * S - z * STEP * S;
+    const cxBase = offX + X0 - DW / 2, cyBase = offY + Y0;
+    const bx0 = x * TILE, by0 = y * TILE;
+    for (let i = 0; i < table.length; i++){
+      const e = table[i];
+      let bx = bx0 + ((e.sox / S) | 0), by = by0 + ((e.soy / S) | 0);
+      if (bx >= sw2) bx = sw2 - 1;   /* 全局右/下边缘：菱形顶点采样出界时钳到源末像素（同主循环） */
+      if (by >= sh2) by = sh2 - 1;
+      const bi = by * sw2 + bx;
+      const di = ((cyBase + e.dy) * outW + (cxBase + e.dx)) * 4;
+      data[di] = src[bi * 4]; data[di + 1] = src[bi * 4 + 1]; data[di + 2] = src[bi * 4 + 2]; data[di + 3] = src[bi * 4 + 3];
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  return cv;
+}
+function drawIsoOverlay(ctx, cache25D, srcOverlay, key){
+  let layer = cache25D[key];
+  if (!layer){ layer = cache25D[key] = buildIsoOverlay(cache25D, srcOverlay); }
+  ctx.drawImage(layer, 0, 0);
+}
+
+/* Phase C：源 16px 单元内矩形 (fx,fy,pw,ph) → 菱形顶面仿射投影路径（canvas 坐标，含抬升 z）。
+   变换：菱形局部 (DX,DY) = (DW/2 + (fx−fy)·S, (fx+fy)·S/2)，再加格原点 (offX+X0, offY+Y0)。
+   源矩形四角在仿射映射下仍是平行四边形 → path fill 即精确投影（顶面零重采样）。 */
+function isoRectPath(ctx, meta, x, y, z, fx, fy, pw, ph, style, alpha){
+  const S = meta.res;
+  const X0 = (x - y) * 16 * S, Y0 = (x + y) * 8 * S - z * STEP * S;
+  const ox = meta.offX + X0, oy = meta.offY + Y0;
+  ctx.fillStyle = style; ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.moveTo(Math.round(ox + (fx - fy) * S), Math.round(oy + (fx + fy) * S / 2));
+  ctx.lineTo(Math.round(ox + (fx + pw - fy) * S), Math.round(oy + (fx + fy + pw) * S / 2));
+  ctx.lineTo(Math.round(ox + (fx + pw - fy - ph) * S), Math.round(oy + (fx + fy + pw + ph) * S / 2));
+  ctx.lineTo(Math.round(ox + (fx - fy - ph) * S), Math.round(oy + (fx + fy + ph) * S / 2));
+  ctx.closePath(); ctx.fill();
+}
+
+/* Phase C：水/岩浆动画粒子投影到菱形顶面。图案逻辑与 render.js drawAnim 完全一致
+   （同一 16px 单元内的波浪/脉冲位置与颜色/alpha），仅放置方式不同：2D 版在格内画平铺 rect，
+   此处把该矩形仿射投影成顶面平行四边形。animOrder 已在 buildMapCache25D 预按 depth=x+y 排序，
+   动画层内部遮挡关系与静态帧同序。 */
+function drawIsoAnim(ctx, cache25D, now, speed){
+  const meta = cache25D.meta, zs = meta.zs, w = meta.w, h = meta.h;
+  const t = now / 1000 * speed;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < cache25D.animOrder.length; i++){
+    const c = cache25D.animCells[cache25D.animOrder[i]];
+    const x = c.x, y = c.y, z = zs[y * w + x];
+    if (c.ty === '~'){
+      if (c.rv){ const k = c.kr;
+        const fx = Math.floor(k * 16 + t * 3.2) % 16, fy = Math.floor(k * 5 + t * 0.9) % 16;
+        isoRectPath(ctx, meta, x, y, z, fx, fy, 3, 1, '#dcefff', 0.3);
+        isoRectPath(ctx, meta, x, y, z, (fx + 4) % 16, (fy + 3) % 16, 2, 1, '#f0faff', 0.18);
+      } else { const k = c.k;
+        const dx1 = Math.floor(k * 16 + t * 2.2) % 16, dy1 = Math.floor(k * 7 + t * 1.1) % 16;
+        const dx2 = Math.floor((k * 11 + t * 1.3 + 5) % 16), dy2 = Math.floor((k * 3 + t * 1.7 + 16) % 16);
+        isoRectPath(ctx, meta, x, y, z, dx1, dy1, 2, 1, '#cfe8ff', 0.35);
+        isoRectPath(ctx, meta, x, y, z, dx2, dy2, 2, 1, '#eaf6ff', 0.22);
+      }
+    } else { const k = c.k, pulse = 0.5 + 0.3 * Math.sin(t * 3 + k * 6.28);
+      const dx = Math.floor(k * 16 + t) % 16, dy = Math.floor(k * 5 + t * 0.7) % 16;
+      isoRectPath(ctx, meta, x, y, z, dx, dy, 2, 2, '#ffc060', pulse * 0.55);
+    }
+  }
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+
+/* 静态导出合成：静态帧 + 海拔着色/等高线 overlay（与 2D 导出一致：不含网格与动画）。 */
+export function composeFrame25D(cache25D, ui){
+  const cv = document.createElement('canvas'); cv.width = cache25D.width; cv.height = cache25D.height;
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(cache25D, 0, 0);
+  if (ui.tint && cache25D._srcTint) drawIsoOverlay(ctx, cache25D, cache25D._srcTint, 'tintCanvas');
+  if (ui.contour && cache25D._srcContour) drawIsoOverlay(ctx, cache25D, cache25D._srcContour, 'contourCanvas');
+  return cv;
+}
+
 function drawIsoGrid(ctx, cache25D){
   const meta = cache25D.meta, S = meta.res, { offX, offY, zs } = meta;
   const w = meta.w, h = meta.h;

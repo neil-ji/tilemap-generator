@@ -24,15 +24,29 @@ export const ISO_H = 16;    /* 菱形外接高 */
 export const STEP = 3;      /* 每高度层垂直抬升像素（屏幕 Y） */
 export const Z_STEPS = 8;   /* 高度量化层数（heights 0..1 → 0..Z_STEPS-1） */
 const ROCKY = { T:1, C:1, K:1, V:1, X:1 };   /* 与 render.js 同：岩类（侧壁层理强化） */
+/* P2 视觉锦上添花参数（docs/terrain-height-research.md §3.2/3.5/3.7）：
+   水下壁基蓝调（高格壁邻水时浸水段偏蓝暗）、hypsometric 冷化（z≥5 高格壁向冷色偏移）、
+   岩壁稀疏竖裂缝（与层理横线正交）、雪壁半分辨率雪斑（读作积雪）。 */
+const WATER_BLUE = [40, 70, 110];        /* 水下壁基：浸水段换偏蓝暗色 */
+const WATER_BLUE_BLEND = 0.35;
+const WATER_CH = { '~':1, 'U':1, 'A':1 }; /* 水格判定（~ 海洋 / U 深水 / A 浅滩，与 render.js 水逻辑一致） */
+const HYPSO_COOL = [140, 160, 185];       /* hypsometric 冷化色（蓝/灰） */
+const HYPSO_BLEND = 0.08;
+const HYPSO_Z = 5;                        /* z≥5 的高格壁才冷化（只冷化壁，不冷化顶面） */
+const CRACK_SEED = 431;                   /* 岩壁裂缝固定 seed（墙锚定，列间低频触发） */
+const SPOT_SEED = 529;                    /* 雪斑固定 seed（半分辨率块） */
+const SNOW_WHITE = [255, 255, 255];       /* 雪斑白点 */
 
 /* 侧壁材质切面参数（Phase B + P1）：blend=基色向切面色混入比、dark=基准亮度（壁顶）、
    cap=顶帽厚度 px（顶面地形色垂下，dz≥2 厚壁才启用分带）、capCol=顶帽色、bedding=层理间距 px、
    beddingA=层理线暗化、debris=底部碎石密度、cast=切面色。
+   P2 追加：crack=岩壁裂缝密度 + crackK=裂缝暗化（rock/snowrock，与层理横线正交的竖裂纹）、
+   spot=雪斑密度（snow，半分辨率白点）。
    风格与 2D drawCliff 基色压暗+层理一致（render.js:35-52），按地形材质分类不跳色。 */
 const WALL_MAT = {
-  rock:     { blend:0.62, dark:0.52, cap:1, capCol:[128,122,136], bedding:4, beddingA:0.24, debris:0.18, cast:[124,118,132] },
-  snowrock: { blend:0.55, dark:0.60, cap:2, capCol:[200,206,220], bedding:4, beddingA:0.14, debris:0.10, cast:[196,202,216] },
-  snow:     { blend:0.45, dark:0.66, cap:3, capCol:[240,246,252], bedding:5, beddingA:0.10, debris:0.08, cast:[238,244,252] },
+  rock:     { blend:0.62, dark:0.52, cap:1, capCol:[128,122,136], bedding:4, beddingA:0.24, debris:0.18, cast:[124,118,132], crack:0.10, crackK:0.88 },
+  snowrock: { blend:0.55, dark:0.60, cap:2, capCol:[200,206,220], bedding:4, beddingA:0.14, debris:0.10, cast:[196,202,216], crack:0.06, crackK:0.92 },
+  snow:     { blend:0.45, dark:0.66, cap:3, capCol:[240,246,252], bedding:5, beddingA:0.10, debris:0.08, cast:[238,244,252], spot:0.10 },
   desert:   { blend:0.50, dark:0.56, cap:2, capCol:[224,196,150], bedding:6, beddingA:0.12, debris:0.14, cast:[206,178,128] },
   earth:    { blend:0.72, dark:0.50, cap:3, capCol:[104,72,48],   bedding:5, beddingA:0.10, debris:0.10, cast:[108,78,48] },
   stone:    { blend:0.55, dark:0.50, cap:1, capCol:[124,126,136], bedding:4, beddingA:0.18, debris:0.14, cast:[118,120,130] },
@@ -98,11 +112,16 @@ function effT(m, x, y){
    方向光照：南壁受光、东壁 ×0.86（光从西北来）。LIP 阈值：dz==1 缓坡只画干净顶帽/唇边（薄壁干净），
    dz≥2 崖壁才画完整四段式（厚壁有结构）。顶缘亮线/壁基 AO 由最终 pass（rimAO）在整幅帧画完后叠画，
    避免被子格顶面覆盖（painter 先画壁后画顶面、低格 depth 更大后画）。
+   P2 追加：① hypsometric 冷化（z≥5 高格壁 base 向冷色偏移 8%，只冷化壁不冷化顶面）；
+   ② 岩壁稀疏竖裂缝（crack，hash2(px, 壁顶Y, 固定seed) 低频列触发 1px 竖向裂纹，与层理横线正交）；
+   ③ 雪壁半分辨率雪斑（spot，hash2(px>>1,(cy-offY)>>1,固定seed) 白点块）；
+   ④ 水下壁基蓝调（waterBelow：face 方向邻格为水时，壁底 1-2px 浸水段换偏蓝暗色，呼应 2D 水下崖基）。
    d = 距壁顶像素距离：d<1 行被本格顶面覆盖（顶面后画），可见顶缘从 d≈1 起。 */
-function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb, face){
+function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb, face, z, waterBelow){
   const base = baseColor(ch);
   const mat = WALL_MAT[wallMaterial(ch)] || WALL_MAT.earth;
-  const col = mix(base, mat.cast, mat.blend);               /* 壁体切面色（浮点） */
+  const cbase = z >= HYPSO_Z ? mix(base, HYPSO_COOL, HYPSO_BLEND) : base;   /* P2 hypsometric 冷化 */
+  const col = mix(cbase, mat.cast, mat.blend);              /* 壁体切面色（浮点） */
   const thick = dz >= 2;                                     /* LIP：薄壁干净、厚壁有结构 */
   const heightDark = Math.min(0.14, (dz - 1) * 0.022);      /* 差 1 层最亮，差多层（悬崖）越深 */
   const capPx = (mat.cap || 1) * S;                          /* 顶帽厚度（res 像素） */
@@ -122,7 +141,7 @@ function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb, f
       let k = mat.dark - fromTop * 0.13 - heightDark;        /* 上亮下暗 + 悬崖越深越暗 */
       if (face === 'east') k *= 0.86;                        /* 方向光照：东壁背光（光从左/北来） */
       if (d < capPx){                                        /* ① 顶帽：顶面地形色垂下 */
-        colv = mix(base, mat.capCol, 0.35);
+        colv = mix(cbase, mat.capCol, 0.35);
         k = mat.dark + 0.06 - fromTop * 0.06;                /* 帽内弱渐变，比壁体亮 */
       } else if (thick && mat.bedding){                      /* ② 岩层：周期横线 + 相位 + 带界深线 */
         const q = d + phase;
@@ -130,9 +149,19 @@ function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb, f
         k *= (band & 1) ? 1.05 : 0.95;                       /* 带间明暗交替（离散色阶） */
         if (q - band * period < S) k *= (1 - mat.beddingA);  /* 带界 1px 深线 */
       }
+      if (thick && mat.crack && d >= capPx && hash2(px, Y0, CRACK_SEED) < mat.crack)
+        k *= mat.crackK;                                     /* P2 岩壁裂缝：低频列 1px 竖向裂纹（与层理横线正交） */
+      if (thick && mat.spot && hash2(px >> 1, (cy - offY) >> 1, SPOT_SEED) < mat.spot){
+        colv = mix(colv, SNOW_WHITE, 0.55);                  /* P2 雪斑：半分辨率白点（读作积雪） */
+        k *= 1.10;
+      }
       if (thick && fromTop > screeTop && hash2(px, cy - offY, 151) < mat.debris)
         k *= 0.72 + hash2(px, cy - offY, 71) * 0.55;         /* ③ 底部碎石（talus，密度按材质） */
       if (thick && fromTop > 1 - 2 * S / Δ) k *= 0.74;       /* ④ 底部 AO（未覆盖处，最终 pass 补边缘） */
+      if (waterBelow && fromTop > 1 - 2 * S / Δ){            /* P2 水下壁基：浸水段换偏蓝暗色 */
+        colv = mix(base, WATER_BLUE, WATER_BLUE_BLEND);
+        k *= 0.85;
+      }
       if (hash2(px, cy - offY, 91) < 0.16) k *= 0.94 + hash2(px, cy - offY, 73) * 0.12;  /* 稀疏微噪声 */
       const i = (cy * outW + cx) * 4;
       data[i]   = Math.min(255, Math.max(0, colv[0] * k));
@@ -154,9 +183,10 @@ function blendPixel(data, outW, outH, cx, cy, r, g, b, a){
   data[i+1] = data[i+1] * (1 - a) + g * a;
   data[i+2] = data[i+2] * (1 - a) + b * a;
 }
-function rimAO(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb){
+function rimAO(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb, z){
   const base = baseColor(ch);
-  const rim = [Math.min(255, base[0] + 42), Math.min(255, base[1] + 34), Math.min(255, base[2] + 24)];
+  const cbase = z >= HYPSO_Z ? mix(base, HYPSO_COOL, HYPSO_BLEND) : base;   /* P2 hypsometric：亮线随壁冷化，保持一致 */
+  const rim = [Math.min(255, cbase[0] + 42), Math.min(255, cbase[1] + 34), Math.min(255, cbase[2] + 24)];
   const rimA = dz >= 2 ? 0.8 : 0.4;                          /* 崖壁缘 crisp、缓坡唇边 subtle（呼应 2D drawLip 0.35） */
   const aoA = Math.min(0.5, 0.28 + (dz - 1) * 0.05);         /* 壁基 AO：落差越大越深（Roll20 越低越暗） */
   const cxa = Math.max(0, Math.ceil(offX + xa)), cxb = Math.min(outW - 1, Math.floor(offX + xb));
@@ -273,8 +303,11 @@ export function buildMapCache25D(m, cacheCanvas, opts){
       const ch = effT(m, x, y);
       const dzS = (y + 1 < h) ? z - zs[idx + w] : 0;
       const dzE = (x + 1 < w) ? z - zs[idx + 1] : 0;
-      if (dzS > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0, 'south');
-      if (dzE > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S, 'east');
+      /* P2 水下壁基：face 方向的邻格为水（~ 海洋/U 深水/A 浅滩）时壁底浸水段换蓝调 */
+      const sb = (y + 1 < h) ? !!WATER_CH[grid[y + 1][x]] : false;
+      const eb = (x + 1 < w) ? !!WATER_CH[grid[y][x + 1]] : false;
+      if (dzS > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0, 'south', z, sb);
+      if (dzE > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S, 'east', z, eb);
       /* 顶面：菱形区域采样（最近邻） */
       const gx0 = x * cellPx, gy0 = y * cellPx;
       const cxBase = offX + X0 - DW / 2, cyBase = offY + Y0;
@@ -297,8 +330,8 @@ export function buildMapCache25D(m, cacheCanvas, opts){
     const ch = effT(m, x, y);
     const dzS = (y + 1 < h) ? z - zs[idx + w] : 0;
     const dzE = (x + 1 < w) ? z - zs[idx + 1] : 0;
-    if (dzS > 0) rimAO(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0);
-    if (dzE > 0) rimAO(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S);
+    if (dzS > 0) rimAO(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0, z);
+    if (dzE > 0) rimAO(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S, z);
   }
   octx.putImageData(img, 0, 0);
   out.meta = { offX, offY, res: S, maxZ, zs, w, h };

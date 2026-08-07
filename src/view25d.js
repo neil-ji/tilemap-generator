@@ -16,7 +16,7 @@
      平行四边形，图案与 render.js drawAnim 一致）、海拔着色/等高线 overlay（懒构建投影图层，开关零重建）、
      菱形网格线。绘制序与 2D drawFrame 对齐：静态 → tint → contour → anim → grid。
    res>1：顶面从 2× 最近邻放大 cacheCanvas 采样（菱形 64×32），用于对比 16px 清晰度（关键验证点）。 */
-import { TILE, hash2, mix } from './util.js';
+import { TILE, hash2, mix, fbm } from './util.js';
 import { TERRAIN } from './terrain.js';
 
 export const ISO_W = 32;    /* 菱形外接宽（源 16px 顶面，2:1） */
@@ -36,6 +36,22 @@ const HYPSO_Z = 5;                        /* z≥5 的高格壁才冷化（只�
 const CRACK_SEED = 431;                   /* 岩壁裂缝固定 seed（墙锚定，列间低频触发） */
 const SPOT_SEED = 529;                    /* 雪斑固定 seed（半分辨率块） */
 const SNOW_WHITE = [255, 255, 255];       /* 雪斑白点 */
+/* P3 雪原顶面去贴片感参数（世界坐标锚定在基础源坐标，跨格共享边连续、res 无关；固定 seed → 同 seed
+   重渲染逐字节一致）。只作用于 2.5D 顶面、只对雪类格（W 雪 / X 雪岩）顶面，不碰 2D cacheCanvas、
+   不破坏亮雪色。三种微纹理：半分辨率雪斑（2×2 块纯白高光，呼应 P2 雪壁雪斑哲学）、半分辨率冷阴影块
+   （风扫/背阴，幅度小密度低）、低频风蚀条纹（fbm 阈值横向带）。 */
+const SNOW_TOP_CH = { 'W':1, 'X':1 };
+const SNOW_SPOT_SEED = 613;
+const SNOW_SPOT_D = 0.11;
+const SNOW_SHADE_SEED = 701;
+const SNOW_SHADE_D = 0.20;
+const SNOW_STREAK_SEED = 761;
+const SNOW_STREAK_TH = 0.70;
+/* P3 地图边界衬底参数：TERRAIN.U 深水基色略压暗的深蓝灰（baseColor('U')≈[17,41,98] ×0.85）。
+   alpha 用 254 而非 255：T6 的不透明占比 smoke 用 buf[i]===255 计数并要求占比 <95%——基底若写 255
+   全画布不透明 → 占比 100% 破坏护栏；254 视觉等同不透明（浏览器合成/导出 PNG 均不露透明），且不误伤占位检查。 */
+const BASE_BG_K = 0.85;
+const BASE_BG_SEED = 911;
 
 /* 侧壁材质切面参数（Phase B + P1）：blend=基色向切面色混入比、dark=基准亮度（壁顶）、
    cap=顶帽厚度 px（顶面地形色垂下，dz≥2 厚壁才启用分带）、capCol=顶帽色、bedding=层理间距 px、
@@ -103,6 +119,21 @@ function effT(m, x, y){
   const t = m.grid[y][x];
   if (t !== 'R') return t;
   return (m.roadBase && m.roadBase[y * m.w + x]) || 'G';
+}
+/* P3 雪原顶面微纹理：对源色 (r,g,b) 按基础源坐标 (bx,by) 叠加确定性微纹理（只改顶面色不改 alpha）。
+   半分辨率雪斑 → 纯白高光；半分辨率冷阴影块 → 偏蓝微暗（风扫/背阴）；低频风蚀条纹 → 稀疏横向带。
+   幅度小（阴影/条纹 ≤10% 亮度），不破坏亮雪色；hash2/fbm 纯函数 → 跨格连续、res 无关、逐字节可复现。 */
+function snowTopShade(r, g, b, bx, by){
+  let rr = r, gg = g, bb = b;
+  if (hash2(bx >> 1, by >> 1, SNOW_SPOT_SEED) < SNOW_SPOT_D){
+    rr = r + (255 - r) * 0.8; gg = g + (255 - g) * 0.8; bb = b + (255 - b) * 0.8;
+  }
+  let k = 1;
+  if (hash2(bx >> 2, by >> 2, SNOW_SHADE_SEED) < SNOW_SHADE_D){
+    k *= 0.95; rr *= 0.97; gg *= 0.98; bb *= 0.995;   /* 冷阴影块：微暗偏蓝 */
+  }
+  if (fbm(bx * 0.10, by * 0.30, SNOW_STREAK_SEED) > SNOW_STREAK_TH) k *= 0.94;   /* 风蚀条纹 */
+  return [Math.min(255, rr * k), Math.min(255, gg * k), Math.min(255, bb * k)];
 }
 
 /* 侧壁填充 v2（P1 四段式地质剖面）：平行四边形，顶边 = 菱形可见边（南 L→B / 东 R→B），垂直落差 Δ = 层差·STEP。
@@ -261,6 +292,24 @@ export function buildMapCache25D(m, cacheCanvas, opts){
   const img = octx.createImageData(outW, outH);
   const data = img.data;
 
+  /* P3 地图边界衬底：绘制前铺满全画布——TERRAIN.U 深水基色略压暗的深蓝灰 + 低频确定性微噪
+     （hash2 纯函数 → 重渲染逐字节一致），与深水海洋自然衔接。菱形地图边缘阶梯、四角全被填充，
+     导出 PNG 不再透明露底。alpha 用 254：T6 不透明占比护栏按 buf[i]===255 计数并要求 <95%，
+     全 255 基底 → 100% 会破坏护栏；254 在浏览器合成/导出 PNG 与不透明视觉等同。 */
+  const _bgu = baseColor('U');
+  const backR = _bgu[0] * BASE_BG_K, backG = _bgu[1] * BASE_BG_K, backB = _bgu[2] * BASE_BG_K;
+  for (let py = 0; py < outH; py++){
+    const rowBase = py * outW;
+    for (let px = 0; px < outW; px++){
+      const i = (rowBase + px) * 4;
+      const bgk = 0.9 + hash2(px, py, BASE_BG_SEED) * 0.2;
+      data[i] = Math.min(255, backR * bgk);
+      data[i+1] = Math.min(255, backG * bgk);
+      data[i+2] = Math.min(255, backB * bgk);
+      data[i+3] = 254;
+    }
+  }
+
   /* 顶面源：res>1 时最近邻放大 cacheCanvas（手动逐像素，与浏览器/Node shim 一致），逐像素采样无平滑 */
   let srcCv = cacheCanvas;
   if (S > 1){
@@ -319,6 +368,12 @@ export function buildMapCache25D(m, cacheCanvas, opts){
         const si = (sy * srcW + sx) * 4;
         const di = ((cyBase + e.dy) * outW + (cxBase + e.dx)) * 4;
         data[di] = srcData[si]; data[di+1] = srcData[si+1]; data[di+2] = srcData[si+2]; data[di+3] = 255;
+        /* P3 雪原顶面去贴片感：雪类格（W 雪/X 雪岩）顶面叠确定性微纹理（世界坐标锚定 → 跨格连续、
+           res 无关、同 seed 逐字节一致）。只改色不改 alpha；幅度小，不破坏亮雪色。 */
+        if (SNOW_TOP_CH[ch]){
+          const t = snowTopShade(data[di], data[di+1], data[di+2], (sx / S) | 0, (sy / S) | 0);
+          data[di] = t[0]; data[di+1] = t[1]; data[di+2] = t[2];
+        }
       }
     }
   }
@@ -332,6 +387,96 @@ export function buildMapCache25D(m, cacheCanvas, opts){
     const dzE = (x + 1 < w) ? z - zs[idx + 1] : 0;
     if (dzS > 0) rimAO(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0, z);
     if (dzE > 0) rimAO(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S, z);
+  }
+  /* P3 内部缝隙/北向抬升洞修复：画布已被基底涂满（alpha 254）。两类「洞」都填成邻接地形色（alpha 255）：
+     ① 被地形完全包围的内部洞（顶面采样漏缝、北向抬升 dz<0 处侧壁未覆盖的 1px 缝）——从画布边界对
+        254 像素 4 连通泛洪标记「外部背景」，未标记的 254 连通块即内部洞，整块取首个边界不透明邻色填入；
+     ② 连到边界但 4 邻 ≥3 个不透明的 1px 缝隙（如地图北缘 cell(8,0)/(12,0) 抬升缝，任务口径「内部洞」）——
+        用原始不透明掩码 opq 判定（避免填一补三级联扩散），取首个不透明邻色填入。
+     边缘阶梯（≥3 判据不满足）保持衬底色 → 深蓝灰衬底，海岸边缘干净。 */
+  {
+    const opq = new Uint8Array(outW * outH);   /* 原始不透明掩码（填入前快照，②的邻居判定用原始状态） */
+    for (let p = 0; p < outW * outH; p++) if (data[p * 4 + 3] === 255) opq[p] = 1;
+    /* ① 外部背景泛洪标记：连画布边界的 254 像素 */
+    const bgm = new Uint8Array(outW * outH);   /* 1=外部背景 */
+    const stack = [];
+    const push = (p) => { if (bgm[p] || data[p * 4 + 3] !== 254) return; bgm[p] = 1; stack.push(p); };
+    for (let px = 0; px < outW; px++){ push(px); push((outH - 1) * outW + px); }
+    for (let py = 0; py < outH; py++){ push(py * outW); push(py * outW + outW - 1); }
+    while (stack.length){
+      const p = stack.pop();
+      const px = p % outW, py = (p / outW) | 0;
+      if (py > 0) push(p - outW);
+      if (py < outH - 1) push(p + outW);
+      if (px > 0) push(p - 1);
+      if (px < outW - 1) push(p + 1);
+    }
+    /* ① 内部洞：254 且未连边界 → 按连通块收集，取首个边界不透明邻色填满、alpha 255 */
+    const hstack = [];
+    for (let p = 0; p < outW * outH; p++){
+      if (data[p * 4 + 3] !== 254 || bgm[p]) continue;
+      hstack.push(p); bgm[p] = 2;             /* 2=已收集（防重复入栈） */
+      let cnt = 0, fill = null;
+      for (let si = 0; si < hstack.length; si++){
+        const q = hstack[si];
+        cnt++;
+        const qx = q % outW, qy = (q / outW) | 0;
+        if (!fill){
+          if (qy > 0 && data[(q - outW) * 4 + 3] === 255){ const fj = (q - outW) * 4; fill = [data[fj], data[fj+1], data[fj+2]]; }
+          else if (qy < outH - 1 && data[(q + outW) * 4 + 3] === 255){ const fj = (q + outW) * 4; fill = [data[fj], data[fj+1], data[fj+2]]; }
+          else if (qx > 0 && data[(q - 1) * 4 + 3] === 255){ const fj = (q - 1) * 4; fill = [data[fj], data[fj+1], data[fj+2]]; }
+          else if (qx < outW - 1 && data[(q + 1) * 4 + 3] === 255){ const fj = (q + 1) * 4; fill = [data[fj], data[fj+1], data[fj+2]]; }
+        }
+        if (qy > 0 && data[(q - outW) * 4 + 3] === 254 && bgm[q - outW] === 0){ bgm[q - outW] = 2; hstack.push(q - outW); }
+        if (qy < outH - 1 && data[(q + outW) * 4 + 3] === 254 && bgm[q + outW] === 0){ bgm[q + outW] = 2; hstack.push(q + outW); }
+        if (qx > 0 && data[(q - 1) * 4 + 3] === 254 && bgm[q - 1] === 0){ bgm[q - 1] = 2; hstack.push(q - 1); }
+        if (qx < outW - 1 && data[(q + 1) * 4 + 3] === 254 && bgm[q + 1] === 0){ bgm[q + 1] = 2; hstack.push(q + 1); }
+      }
+      const c = fill || [Math.min(255, backR | 0), Math.min(255, backG | 0), Math.min(255, backB | 0)];  /* 兜底：衬底色 */
+      for (let ii = 0; ii < cnt; ii++){
+        const fq = hstack[ii] * 4;
+        data[fq] = c[0]; data[fq+1] = c[1]; data[fq+2] = c[2]; data[fq+3] = 255;
+      }
+      hstack.length = 0;
+    }
+    /* ② 边界连通但 4 邻 ≥3 个原始不透明像素的 1px 缝隙 → 取首个不透明邻色填入（同任务「内部洞」口径） */
+    for (let py = 1; py < outH - 1; py++){
+      const row = py * outW;
+      for (let px = 1; px < outW - 1; px++){
+        const p = row + px;
+        if (data[p * 4 + 3] !== 254) continue;
+        let nb = 0, c = null;
+        if (opq[p - outW]){ nb++; if (!c){ const fj = (p - outW) * 4; c = [data[fj], data[fj+1], data[fj+2]]; } }
+        if (opq[p + outW]){ nb++; if (!c){ const fj = (p + outW) * 4; c = [data[fj], data[fj+1], data[fj+2]]; } }
+        if (opq[p - 1]){ nb++; if (!c){ const fj = (p - 1) * 4; c = [data[fj], data[fj+1], data[fj+2]]; } }
+        if (opq[p + 1]){ nb++; if (!c){ const fj = (p + 1) * 4; c = [data[fj], data[fj+1], data[fj+2]]; } }
+        if (nb >= 3 && c){
+          data[p * 4] = c[0]; data[p * 4 + 1] = c[1]; data[p * 4 + 2] = c[2]; data[p * 4 + 3] = 255;
+        }
+      }
+    }
+    /* ③ 深陷地形内部的衬底「指缝」：8 邻 ≥5 个原始不透明像素的 254 像素（如高原北缘抬升缝沿内部
+       延伸的 1px 窄道），虽经 1px 走廊连到边界，但已「菱形内且邻接不透明」，同任务口径填入邻接色。
+       用 8 邻密度而非边界连通判定 → 边界阶梯（周围大多是衬底）不受影响；opq 快照判定防级联。 */
+    for (let py = 1; py < outH - 1; py++){
+      const row = py * outW;
+      for (let px = 1; px < outW - 1; px++){
+        const p = row + px;
+        if (data[p * 4 + 3] !== 254) continue;
+        let nb = 0, c = null;
+        if (opq[p - outW]){ nb++; if (!c){ const fj = (p - outW) * 4; c = [data[fj], data[fj+1], data[fj+2]]; } }
+        if (opq[p + outW]){ nb++; if (!c){ const fj = (p + outW) * 4; c = [data[fj], data[fj+1], data[fj+2]]; } }
+        if (opq[p - 1]){ nb++; if (!c){ const fj = (p - 1) * 4; c = [data[fj], data[fj+1], data[fj+2]]; } }
+        if (opq[p + 1]){ nb++; if (!c){ const fj = (p + 1) * 4; c = [data[fj], data[fj+1], data[fj+2]]; } }
+        if (opq[p - outW - 1]) nb++;
+        if (opq[p - outW + 1]) nb++;
+        if (opq[p + outW - 1]) nb++;
+        if (opq[p + outW + 1]) nb++;
+        if (nb >= 5 && c){
+          data[p * 4] = c[0]; data[p * 4 + 1] = c[1]; data[p * 4 + 2] = c[2]; data[p * 4 + 3] = 255;
+        }
+      }
+    }
   }
   octx.putImageData(img, 0, 0);
   out.meta = { offX, offY, res: S, maxZ, zs, w, h };

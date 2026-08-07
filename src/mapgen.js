@@ -85,6 +85,10 @@ export function genWorld(o){
       for(const d of [[-1,0],[1,0],[0,-1],[0,1]]){ const ny=y+d[0],nx=x+d[1]; if(ny>=0&&ny<h&&nx>=0&&nx<w&&(grid[ny][nx]==='~'||grid[ny][nx]==='A')) wc=true; }
       if(wc) grid[y][x]='M';
     } } }
+  /* 海岸距离场：软质海岸沙带均匀化。BFS 算到最近水体（~/U/A）的曼哈顿距离后处理，
+     dist==1 软质陆地（G/D/Z/H/Q/E 可侵蚀地形）→ S 沙滩，形成连续均匀软质海岸沙带；
+     dist==2 自沙带前沿少量沙质过渡（克制，防过厚沙带）。需在 swamp 之后运行以保留沿岸沼泽 M。 */
+  coastDistanceField(grid,w,h,o);
   /* 泥滩：沙滩/沙漠/沼泽与水体相邻处部分转为湿润反光的泥滩 @ */
   if(o.mudflat && !o.frozenOcean){ const mf=['S','E','M'];
     for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(mf.indexOf(grid[y][x])>=0){
@@ -95,6 +99,37 @@ export function genWorld(o){
   /* Phase 2：返回并行高度层 heights（第一遍已算好的连续海拔场 hhField，零新增计算）。
      高度层只驱动渲染侧浮雕/阴影/等高线，不掺入字符 grid（保持 tiles.js 签名缓存 key 纯净）。 */
   return {grid,w,h,seed,river,heights:hhField,roadBase};
+}
+export function coastDistanceField(grid,w,h,o){
+  /* 海岸距离场：BFS 逐格到最近水体（~/U/A）的曼哈顿距离，dist==1 软质陆地 → S，dist==2 沙带前沿少量过渡。
+     只转换可侵蚀软质地形（G/D/Z/H/Q/E）；岩质海岸（W/X/V/T/K）、裂隙 Y、道路 R、沼泽 M、水体本身保留。
+     frozenOcean 冰原/冻土海岸不转暖沙；概率仅由 hash2 驱动，同 seed 可复现。 */
+  if(o.frozenOcean) return;
+  const soft={G:1,D:1,Z:1,H:1,Q:1,E:1};
+  const dist=new Int32Array(w*h).fill(-1);
+  const qx=new Int32Array(w*h), qy=new Int32Array(w*h);
+  let head=0, tail=0;
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const c=grid[y][x];
+    if(c==='~'||c==='U'||c==='A'){ dist[y*w+x]=0; qx[tail]=x; qy[tail]=y; tail++; }
+  }
+  const fadeP=o.desert?0.5:0.3;
+  while(head<tail){
+    const x=qx[head], y=qy[head]; head++;
+    const d=dist[y*w+x];
+    if(d>=2) continue;
+    const isSand=grid[y][x]==='S';   /* 只有沙带前沿向外扩散过渡，岩/路/裂隙前沿不扩 */
+    for(const [dy,dx] of [[-1,0],[1,0],[0,-1],[0,1]]){
+      const ny=y+dy, nx=x+dx;
+      if(ny<0||ny>=h||nx<0||nx>=w) continue;
+      const i=ny*w+nx;
+      if(dist[i]>=0) continue;
+      const c=grid[ny][nx];
+      if(d===0){ if(soft[c]) grid[ny][nx]='S'; }
+      else if(d===1 && isSand && soft[c] && hash2(nx,ny,o.seed+123)<fadeP) grid[ny][nx]='S';
+      dist[i]=d+1; qx[tail]=nx; qy[tail]=ny; tail++;
+    }
+  }
 }
 export function carveChasm(grid,pts,w,h,seed){
   /* 深渊裂隙：沿折线盖章不可通行深坑 Y（2 格宽，方向随机偏），不覆盖水/道路/岩浆 */

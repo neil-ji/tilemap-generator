@@ -2,12 +2,12 @@
  "note": "buildMapCache 全缓冲 SHA-256（固定 seed 地图，T7 2D 逐字节护栏）",
  "caches": {
   "plateau-47": {
-   "main": "11a3ea2e74f7da31341351d406aaab5a6e8a0c8cd4f4ebb9bdffeb74a6b8c87a",
+   "main": "1456500b5a7dca977c97c4f2e9fdf6e51e8413481b5d8d5555f67f43a2de69c4",
    "tint": "4d36d4b59f6d48144a7bcb23d28fe632ad3432c62aedb69b7a594a84edf2776a",
    "contour": "f8e862c6a4f2406937764bf4b7da6adcfecc4413434f6c37f0410f533bfd0b0b"
   },
   "doom-23": {
-   "main": "339b6e2855656d9be125b42225c256475d3abb467a1a85e2dd738e140591cf67",
+   "main": "c12b5ecd56f792e36352d9cc8c6d869e145b15321dab04811aedf1fdf5ab9614",
    "tint": "40dd8ea8db4999cf1da5aebc4cee8d9f748d6caef498e4d55afff6b981a97652",
    "contour": "32d93173a1f1462ebc62e4039dcef8b47e2147d1f938384673586b4e685a892e"
   },

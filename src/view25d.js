@@ -80,6 +80,30 @@ function wallMaterial(ch){
   if (ch === '~' || ch === 'U' || ch === 'A' || ch === 'Y') return 'water';
   return 'earth';   /* D/G/H/R/Z/Q/M/N/F 及兜底 */
 }
+/* P4 崖壁材质过渡细化（docs/terrain-height-research.md §3.2 + VLM 评审：雪→岩→土自然衔接）：
+   ① 高程材质渐变：侧壁基色按壁 z 向"海拔材质轴"（土→石→岩→雪岩→雪）平滑 mix——高海拔壁倾向
+      雪/雪岩、中海拔倾向岩、低海拔倾向土/沙 → 相邻崖壁段（同一悬崖面）不再单材质硬切；
+   ② 雪线过渡带：壁底 1-2px 向下方邻格材质半混入（半雪半岩），雪线与岩壁交界处不再是一条硬边。
+   幅度克制（ELEV_BLEND=0.40、BELOW_BLEND=0.80）——材质辨识度不丢；岩浆/水下壁不掺（特殊表面保持本色）。
+   纯函数 → 同 seed 逐字节一致，不碰 2D 签名缓存、不碰 WALL_MAT 既有字段。 */
+const ELEV_ANCHORS = [ [108,78,48], [118,120,130], [124,118,132], [196,202,216], [238,244,252] ]; /* 土→石→岩→雪岩→雪 cast 锚点 */
+const ELEV_ZPOS = [0, 0.5, 1.4, 2.0, 2.5, 3.0, 3.6, 4.0];   /* z=0..7 → 海拔材质轴位置（与各图地形-海拔分布对齐） */
+const ELEV_BLEND = 0.40;
+const BELOW_BLEND = 0.80;    /* 壁底向下方邻格材质最大混入（≈"半雪半岩"） */
+const BELOW_PX = 3.0;        /* 雪线过渡带深度（res 单位；dz=1 薄壁整壁 2 可见行都覆盖） */
+const ELEV_SKIP = { lava: 1, water: 1 };
+function elevPosAt(z){ return ELEV_ZPOS[Math.max(0, Math.min(Z_STEPS - 1, z))]; }
+function elevColorAt(p){
+  const i = Math.max(0, Math.min(ELEV_ANCHORS.length - 2, Math.floor(p)));
+  return mix(ELEV_ANCHORS[i], ELEV_ANCHORS[i + 1], p - i);
+}
+/* 壁体切面色（与 fillWall 主色同配方：基色 + hypsometric 冷化 + cast 混入）——供下方邻格作混色目标 */
+function wallCastColor(ch, z){
+  const mat = WALL_MAT[wallMaterial(ch)] || WALL_MAT.earth;
+  const base = baseColor(ch);
+  const cbase = z >= HYPSO_Z ? mix(base, HYPSO_COOL, HYPSO_BLEND) : base;
+  return mix(cbase, mat.cast, mat.blend);
+}
 
 /* 顶面菱形采样表（cell 无关，按 res 一次缓存）：
    每条 = 输出菱形内像素 (dx,dy) 对应源 16×16 单元内偏移 (sox,soy)（res 像素单位，最近邻取整）。
@@ -148,11 +172,17 @@ function snowTopShade(r, g, b, bx, by){
    ③ 雪壁半分辨率雪斑（spot，hash2(px>>1,(cy-offY)>>1,固定seed) 白点块）；
    ④ 水下壁基蓝调（waterBelow：face 方向邻格为水时，壁底 1-2px 浸水段换偏蓝暗色，呼应 2D 水下崖基）。
    d = 距壁顶像素距离：d<1 行被本格顶面覆盖（顶面后画），可见顶缘从 d≈1 起。 */
-function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb, face, z, waterBelow){
+function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb, face, z, waterBelow, belowCh){
   const base = baseColor(ch);
-  const mat = WALL_MAT[wallMaterial(ch)] || WALL_MAT.earth;
+  const mkey = wallMaterial(ch);
+  const mat = WALL_MAT[mkey] || WALL_MAT.earth;
   const cbase = z >= HYPSO_Z ? mix(base, HYPSO_COOL, HYPSO_BLEND) : base;   /* P2 hypsometric 冷化 */
-  const col = mix(cbase, mat.cast, mat.blend);              /* 壁体切面色（浮点） */
+  let col = mix(cbase, mat.cast, mat.blend);                /* 壁体切面色（浮点） */
+  /* P4 ① 高程材质渐变：按壁 z 向海拔材质轴混入（高→雪/雪岩、中→岩、低→土/沙）→ 相邻崖壁段不再硬切 */
+  if (!ELEV_SKIP[mkey]) col = mix(col, elevColorAt(elevPosAt(z)), ELEV_BLEND);
+  /* P4 ② 雪线过渡带目标色：下方邻格壁体切面色（半雪半岩混入目标，随下方地形；. 表示无邻格） */
+  const belowCol = (belowCh && belowCh !== '.') ? wallCastColor(belowCh, Math.max(0, z - dz)) : null;
+  const belowPx = Math.min(Δ, BELOW_PX * S);                /* 过渡带深度（res 像素） */
   const thick = dz >= 2;                                     /* LIP：薄壁干净、厚壁有结构 */
   const heightDark = Math.min(0.14, (dz - 1) * 0.022);      /* 差 1 层最亮，差多层（悬崖）越深 */
   const capPx = (mat.cap || 1) * S;                          /* 顶帽厚度（res 像素） */
@@ -180,6 +210,10 @@ function fillWall(data, outW, outH, offX, offY, X0, Y0, Δ, dz, S, ch, xa, xb, f
         k *= (band & 1) ? 1.05 : 0.95;                       /* 带间明暗交替（离散色阶） */
         if (q - band * period < S) k *= (1 - mat.beddingA);  /* 带界 1px 深线 */
       }
+      /* P4 ② 雪线过渡带：壁底向下方邻格材质半混入（雪壁底→岩/土半雪半岩、岩壁底→岩浆受热、崖基→水蓝），
+         权重 0→BELOW_BLEND 随 fromTop→1 渐强；位于底部 AO/水蓝带之上，P2 水下蓝基不被破坏 */
+      if (belowCol && belowPx > 0 && fromTop > 1 - belowPx / Δ)
+        colv = mix(colv, belowCol, (fromTop - (1 - belowPx / Δ)) / (belowPx / Δ) * BELOW_BLEND);
       if (thick && mat.crack && d >= capPx && hash2(px, Y0, CRACK_SEED) < mat.crack)
         k *= mat.crackK;                                     /* P2 岩壁裂缝：低频列 1px 竖向裂纹（与层理横线正交） */
       if (thick && mat.spot && hash2(px >> 1, (cy - offY) >> 1, SPOT_SEED) < mat.spot){
@@ -355,8 +389,11 @@ export function buildMapCache25D(m, cacheCanvas, opts){
       /* P2 水下壁基：face 方向的邻格为水（~ 海洋/U 深水/A 浅滩）时壁底浸水段换蓝调 */
       const sb = (y + 1 < h) ? !!WATER_CH[grid[y + 1][x]] : false;
       const eb = (x + 1 < w) ? !!WATER_CH[grid[y][x + 1]] : false;
-      if (dzS > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0, 'south', z, sb);
-      if (dzE > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S, 'east', z, eb);
+      /* P4 雪线过渡带：face 方向的下方邻格地形（经 effT 解析基底），供壁底半雪半岩混入 */
+      const belowS = (y + 1 < h) ? effT(m, x, y + 1) : '.';
+      const belowE = (x + 1 < w) ? effT(m, x + 1, y) : '.';
+      if (dzS > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzS * STEP * S, dzS, S, ch, X0 - 16 * S, X0, 'south', z, sb, belowS);
+      if (dzE > 0) fillWall(data, outW, outH, offX, offY, X0, Y0, dzE * STEP * S, dzE, S, ch, X0, X0 + 16 * S, 'east', z, eb, belowE);
       /* 顶面：菱形区域采样（最近邻） */
       const gx0 = x * cellPx, gy0 = y * cellPx;
       const cxBase = offX + X0 - DW / 2, cyBase = offY + Y0;
